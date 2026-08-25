@@ -22,6 +22,32 @@ struct IdleTimeout {
 	response_started: bool,
 }
 
+#[derive(Debug)]
+struct BackendResolver {
+	name: String,
+	host: String,
+	port: u16,
+}
+
+impl reqwest::dns::Resolve for BackendResolver {
+	fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+		let requested_name = name.as_str().to_string();
+		let (host, port) = if requested_name.eq_ignore_ascii_case(&self.name) {
+			(self.host.clone(), self.port)
+		} else {
+			(requested_name, 0)
+		};
+		Box::pin(async move {
+			let addresses = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+				vec![std::net::SocketAddr::new(ip, port)]
+			} else {
+				tokio::net::lookup_host(format!("{host}:{port}")).await?.collect()
+			};
+			Ok(Box::new(addresses.into_iter()) as reqwest::dns::Addrs)
+		})
+	}
+}
+
 impl std::fmt::Display for IdleTimeout {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{} idle timeout after {:?}", self.phase, self.duration)
@@ -126,9 +152,17 @@ fn build_backend_route(camouflage: &CamouflageConfig) -> eyre::Result<(Url, Opti
 		backend
 			.set_host(Some(reverse_proxy_hostname))
 			.map_err(|_| eyre::eyre!("invalid `camouflage.reverse_proxy_hostname`: {reverse_proxy_hostname}"))?;
-		if let Ok(ip) = backend_host.parse::<std::net::IpAddr>() {
-			client_builder = client_builder.resolve(reverse_proxy_hostname, std::net::SocketAddr::new(ip, backend_port));
-		}
+		// Keep the backend connection endpoint separate from the HTTP authority.
+		// In particular, a private/NAT port such as 450 must not appear in the
+		// authority seen by the backend and used to generate absolute URLs.
+		backend
+			.set_port(None)
+			.map_err(|_| eyre::eyre!("invalid backend URL scheme: {}", backend.scheme()))?;
+		client_builder = client_builder.dns_resolver(BackendResolver {
+			name: reverse_proxy_hostname.to_string(),
+			host: backend_host,
+			port: backend_port,
+		});
 		backend_host_override = Some(reverse_proxy_hostname.to_string());
 	}
 
@@ -157,12 +191,6 @@ where
 			backend_request = backend_request.header(name, value);
 		}
 	}
-	let forwarded_for = request
-		.headers()
-		.get("x-forwarded-for")
-		.and_then(|value| value.to_str().ok())
-		.filter(|value| !value.is_empty())
-		.map_or_else(|| remote_ip.to_string(), |value| format!("{value}, {remote_ip}"));
 	let forwarded_host = backend_host_override.map(str::to_owned).or_else(|| {
 		request
 			.headers()
@@ -171,9 +199,7 @@ where
 			.map(str::to_owned)
 	});
 	backend_request = backend_request
-		.header("x-forwarded-for", forwarded_for)
 		.header("x-forwarded-proto", "https")
-		.header("x-forwarded-port", "443")
 		.header("x-real-ip", remote_ip.to_string());
 	if let Some(forwarded_host) = forwarded_host {
 		backend_request = backend_request.header("x-forwarded-host", forwarded_host);
@@ -290,7 +316,40 @@ fn is_forwardable_header(name: &HeaderName) -> bool {
 
 fn is_proxy_identity_header(name: &HeaderName) -> bool {
 	matches!(
-		name.as_str(),
-		"x-forwarded-for" | "x-forwarded-host" | "x-forwarded-port" | "x-forwarded-proto" | "x-real-ip"
+		name.as_str().to_ascii_lowercase().as_str(),
+		"forwarded" | "x-forwarded-for" | "x-forwarded-host" | "x-forwarded-port" | "x-forwarded-proto" | "x-real-ip"
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn backend_override_does_not_expose_connection_port() {
+		let config = CamouflageConfig {
+			reverse_proxy_url: "https://us-la.mirror.foolyou.top:450".into(),
+			reverse_proxy_hostname: Some("us-la.mirror.foolyou.top".into()),
+			..Default::default()
+		};
+
+		let (backend, host, _) = build_backend_route(&config).unwrap();
+		assert_eq!(backend.as_str(), "https://us-la.mirror.foolyou.top/");
+		assert_eq!(backend.port(), None);
+		assert_eq!(host.as_deref(), Some("us-la.mirror.foolyou.top"));
+	}
+
+	#[test]
+	fn client_proxy_identity_headers_are_not_forwarded() {
+		for name in [
+			"forwarded",
+			"x-forwarded-for",
+			"x-forwarded-host",
+			"x-forwarded-port",
+			"x-forwarded-proto",
+			"x-real-ip",
+		] {
+			assert!(is_proxy_identity_header(&HeaderName::from_bytes(name.as_bytes()).unwrap()));
+		}
+	}
 }
