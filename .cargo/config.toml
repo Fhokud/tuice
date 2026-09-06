@@ -7,3 +7,20 @@ rustflags = [
     "-C", "target-cpu=sandybridge",
     "-C", "link-arg=-fuse-ld=mold"
 ]
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-cpu=sandybridge"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-cpu=native"]
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-cpu=native"]
+
+[env]
+CFLAGS_x86_64_unknown_linux_musl = "-O3 -march=sandybridge -mtune=sandybridge"
+CXXFLAGS_x86_64_unknown_linux_musl = "-O3 -march=sandybridge -mtune=sandybridge"
+CFLAGS_x86_64_unknown_linux_gnu = "-O3 -march=sandybridge -mtune=sandybridge"
+CXXFLAGS_x86_64_unknown_linux_gnu = "-O3 -march=sandybridge -mtune=sandybridge"
+CFLAGS_x86_64_pc_windows_gnu = "-O3 -march=native -mtune=native"
+CXXFLAGS_x86_64_pc_windows_gnu = "-O3 -march=native -mtune=native"

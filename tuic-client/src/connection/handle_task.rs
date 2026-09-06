@@ -15,8 +15,21 @@ use crate::{error::Error, utils::UdpRelayMode};
 impl Connection {
 	pub async fn authenticate(self, zero_rtt_accepted: Option<ZeroRttAccepted>) {
 		if let Some(zero_rtt_accepted) = zero_rtt_accepted {
-			debug!("[relay] [authenticate] waiting for connection to be fully established");
-			zero_rtt_accepted.await;
+			debug!("[relay] [authenticate] sending 0-RTT authentication");
+			let early_sent = match self.model.authenticate_early(self.uuid, self.password.clone()).await {
+				Ok(()) => true,
+				Err(err) => {
+					warn!("[relay] [authenticate] early authentication sending error: {err}");
+					false
+				}
+			};
+
+			if zero_rtt_accepted.await && early_sent {
+				info!("[relay] [authenticate] {uuid} (0-RTT)", uuid = self.uuid);
+				return;
+			}
+
+			debug!("[relay] [authenticate] 0-RTT rejected; resending after handshake");
 		}
 
 		debug!("[relay] [authenticate] sending authentication");

@@ -1,5 +1,6 @@
 [workspace]
 members = ["tuic-core", "tuic-server", "tuic-client", "tuic-tests"]
+exclude = ["vendor/quinn-src", "vendor/rustls"]
 resolver = "2"
 
 [workspace.package]
@@ -15,6 +16,14 @@ repository = "https://github.com/Itsusinn/tuic"
 quinn = { branch = "bbrv3", git = "https://github.com/Tipuch/quinn.git", default-features = false }
 quinn-proto = { branch = "bbrv3", git = "https://github.com/Tipuch/quinn.git", default-features = false }
 quinn-congestions = { git = "https://github.com/proxy-rs/quinn-congestions.git", default-features = false}
+
+[patch.crates-io]
+rustls = { path = "vendor/rustls" }
+
+[patch."https://github.com/Tipuch/quinn.git"]
+quinn = { path = "vendor/quinn-src/quinn" }
+quinn-proto = { path = "vendor/quinn-src/quinn-proto" }
+quinn-udp = { path = "vendor/quinn-src/quinn-udp" }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

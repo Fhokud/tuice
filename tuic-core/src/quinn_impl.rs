@@ -143,7 +143,11 @@ impl<Side> Connection<Side> {
 	}
 
 	fn keying_material_exporter(&self) -> KeyingMaterialExporter {
-		KeyingMaterialExporter(self.conn.clone())
+		KeyingMaterialExporter::new(self.conn.clone(), false)
+	}
+
+	fn early_keying_material_exporter(&self) -> KeyingMaterialExporter {
+		KeyingMaterialExporter::new(self.conn.clone(), true)
 	}
 }
 
@@ -168,6 +172,21 @@ impl Connection<side::Client> {
 		model.header().async_marshal(&mut send).await?;
 		send.finish()?;
 		send.stopped().await?;
+		Ok(())
+	}
+
+	/// Sends an `Authenticate` command using the TLS 1.3 early exporter.
+	///
+	/// This succeeds only on a resumed connection with 0-RTT keys.
+	pub async fn authenticate_early(&self, uuid: Uuid, password: impl AsRef<[u8]>) -> eyre::Result<()> {
+		let model = self
+			.model
+			.send_authenticate(uuid, password, &self.early_keying_material_exporter())
+			.map_err(|_| eyre::eyre!("TLS early keying material export failed"))?;
+
+		let mut send = self.conn.open_uni().await?;
+		model.header().async_marshal(&mut send).await?;
+		send.finish()?;
 		Ok(())
 	}
 
@@ -402,7 +421,13 @@ impl Authenticate {
 	/// Returns `Err(ExportError)` if the TLS keying material export
 	/// fails — authentication MUST be rejected in that case.
 	pub fn validate(&self, password: impl AsRef<[u8]>) -> Result<bool, crate::model::ExportError> {
-		self.model.is_valid(password, &self.exporter)
+		let password = password.as_ref();
+		let early_exporter = KeyingMaterialExporter::new(self.exporter.conn.clone(), true);
+		match self.model.is_valid(password, &early_exporter) {
+			Ok(true) => Ok(true),
+			Ok(false) => self.model.is_valid(password, &self.exporter),
+			Err(_) => self.model.is_valid(password, &self.exporter),
+		}
 	}
 }
 
@@ -578,12 +603,26 @@ pub enum Task<S: StreamTx = quinn_crate::SendStream, R: StreamRx = quinn_crate::
 }
 
 #[derive(Debug)]
-struct KeyingMaterialExporter(quinn_crate::Connection);
+struct KeyingMaterialExporter {
+	conn: quinn_crate::Connection,
+	early: bool,
+}
+
+impl KeyingMaterialExporter {
+	fn new(conn: quinn_crate::Connection, early: bool) -> Self {
+		Self { conn, early }
+	}
+}
 
 impl KeyingMaterialExporterImpl for KeyingMaterialExporter {
 	fn export_keying_material(&self, label: &[u8], context: &[u8]) -> Result<[u8; 32], crate::model::ExportError> {
 		let mut buf = [0; 32];
-		self.0.export_keying_material(&mut buf, label, context).map_err(|err| {
+		let result = if self.early {
+			self.conn.export_early_keying_material(&mut buf, label, context)
+		} else {
+			self.conn.export_keying_material(&mut buf, label, context)
+		};
+		result.map_err(|err| {
 			warn!("export keying material error {:#?}", err);
 			crate::model::ExportError
 		})?;
