@@ -5,6 +5,8 @@ use crate::{Duration, Instant};
 use std::any::Any;
 use std::sync::Arc;
 
+pub use crate::packet::SpaceId;
+
 mod bbr3;
 mod cubic;
 mod new_reno;
@@ -34,6 +36,7 @@ pub trait Controller: Send + Sync {
         sent: Instant,
         bytes: u64,
         pn: u64,
+        space: SpaceId,
         app_limited: bool,
         rtt: &RttEstimator,
     ) {
@@ -47,6 +50,7 @@ pub trait Controller: Send + Sync {
         in_flight: u64,
         app_limited: bool,
         largest_packet_num_acked: Option<u64>,
+        space: SpaceId,
     ) {
     }
 
@@ -66,6 +70,7 @@ pub trait Controller: Send + Sync {
         is_ecn: bool,
         lost_bytes: u64,
         largest_lost: u64,
+        space: SpaceId,
     );
 
     /// One packet was just lost

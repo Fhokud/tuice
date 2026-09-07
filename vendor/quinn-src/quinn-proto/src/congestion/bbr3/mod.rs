@@ -2,7 +2,7 @@ mod max_filter;
 
 use crate::RttEstimator;
 use crate::congestion::bbr3::max_filter::MaxFilter;
-use crate::congestion::{Controller, ControllerFactory, ControllerMetrics};
+use crate::congestion::{Controller, ControllerFactory, ControllerMetrics, SpaceId};
 use crate::{Duration, Instant};
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg32;
@@ -1455,6 +1455,7 @@ impl Controller for Bbr3 {
         sent: Instant,
         bytes: u64,
         packet_number: u64,
+        _space: SpaceId,
         _app_limited: bool,
         rtt: &RttEstimator,
     ) {
@@ -1523,6 +1524,7 @@ impl Controller for Bbr3 {
         in_flight: u64,
         app_limited: bool,
         largest_packet_num_acked: Option<u64>,
+        _space: SpaceId,
     ) {
         self.inflight = in_flight;
         if let Some(largest_packet_num) = largest_packet_num_acked {
@@ -1573,6 +1575,7 @@ impl Controller for Bbr3 {
         is_ecn: bool,
         lost_bytes: u64,
         largest_lost: u64,
+        _space: SpaceId,
     ) {
         // only process ecn here, regular packet loss is detected per packet in on_packet_lost.
         if is_ecn {

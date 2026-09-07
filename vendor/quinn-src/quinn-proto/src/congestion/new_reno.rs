@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
+use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory, SpaceId};
 use crate::Instant;
 use crate::connection::RttEstimator;
 
@@ -47,6 +47,7 @@ impl Controller for NewReno {
         sent: Instant,
         bytes: u64,
         _pn: u64,
+        _space: SpaceId,
         app_limited: bool,
         _rtt: &RttEstimator,
     ) {
@@ -91,6 +92,7 @@ impl Controller for NewReno {
         _is_ecn: bool,
         _lost_bytes: u64,
         _largest_lost: u64,
+        _space: SpaceId,
     ) {
         if sent <= self.recovery_start_time {
             return;

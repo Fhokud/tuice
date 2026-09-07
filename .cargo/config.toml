@@ -17,7 +17,15 @@ rustflags = ["-C", "target-cpu=native"]
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-cpu=native"]
 
+#linker = "clang"
+#rustflags = [
+#    "-C", "target-cpu=lunarlake",
+#    "-C", "link-arg=-fuse-ld=mold"
+#]
+
 [env]
+#CFLAGS = "-O3 -march=lunarlake -mtune=lunarlake"
+#CXXFLAGS = "-O3 -march=lunarlake -mtune=lunarlake"
 CFLAGS_x86_64_unknown_linux_musl = "-O3 -march=sandybridge -mtune=sandybridge"
 CXXFLAGS_x86_64_unknown_linux_musl = "-O3 -march=sandybridge -mtune=sandybridge"
 CFLAGS_x86_64_unknown_linux_gnu = "-O3 -march=sandybridge -mtune=sandybridge"

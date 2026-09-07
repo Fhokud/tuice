@@ -2,7 +2,7 @@ use std::any::Any;
 use std::cmp;
 use std::sync::Arc;
 
-use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
+use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory, SpaceId};
 use crate::connection::RttEstimator;
 use crate::{Duration, Instant};
 
@@ -108,6 +108,7 @@ impl Controller for Cubic {
         sent: Instant,
         bytes: u64,
         _pn: u64,
+        _space: SpaceId,
         app_limited: bool,
         rtt: &RttEstimator,
     ) {
@@ -183,6 +184,7 @@ impl Controller for Cubic {
         is_ecn: bool,
         _lost_bytes: u64,
         _largest_lost: u64,
+        _space: SpaceId,
     ) {
         if self
             .state
