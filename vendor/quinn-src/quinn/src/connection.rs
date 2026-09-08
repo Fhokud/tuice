@@ -16,7 +16,11 @@ use bytes::Bytes;
 use pin_project_lite::pin_project;
 use rustc_hash::FxHashMap;
 use thiserror::Error;
-use tokio::sync::{Notify, futures::Notified, mpsc, oneshot};
+use tokio::sync::{
+    Notify,
+    futures::{Notified, OwnedNotified},
+    mpsc, oneshot, watch,
+};
 use tracing::{Instrument, Span, debug_span};
 
 use crate::{
@@ -36,7 +40,7 @@ use proto::{
 #[derive(Debug)]
 pub struct Connecting {
     conn: Option<ConnectionRef>,
-    connected: oneshot::Receiver<bool>,
+    connected: Pin<Box<OwnedNotified>>,
     handshake_data_ready: Option<oneshot::Receiver<()>>,
 }
 
@@ -50,7 +54,6 @@ impl Connecting {
         runtime: Arc<dyn Runtime>,
     ) -> Self {
         let (on_handshake_data_send, on_handshake_data_recv) = oneshot::channel();
-        let (on_connected_send, on_connected_recv) = oneshot::channel();
 
         let conn = ConnectionRef(Arc::new(ConnectionInner {
             state: Mutex::new(State::new(
@@ -59,12 +62,12 @@ impl Connecting {
                 endpoint_events,
                 conn_events,
                 on_handshake_data_send,
-                on_connected_send,
                 sender,
                 runtime.clone(),
             )),
             shared: Shared::default(),
         }));
+        let connected = Box::pin(conn.shared.connected.clone().notified_owned());
 
         let driver = ConnectionDriver(conn.clone());
         runtime.spawn(Box::pin(
@@ -78,7 +81,7 @@ impl Connecting {
 
         Self {
             conn: Some(conn),
-            connected: on_connected_recv,
+            connected,
             handshake_data_ready: Some(on_handshake_data_recv),
         }
     }
@@ -88,7 +91,7 @@ impl Connecting {
     /// Returns `Ok` immediately if the local endpoint is able to attempt sending 0/0.5-RTT data.
     /// If so, the returned [`Connection`] can be used to send application data without waiting for
     /// the rest of the handshake to complete, at the cost of weakened cryptographic security
-    /// guarantees. The returned [`ZeroRttAccepted`] future resolves when the handshake does
+    /// guarantees. The [`Connection::authenticated`] future resolves when the handshake does
     /// complete, at which point subsequently opened streams and written data will have full
     /// cryptographic protection.
     ///
@@ -98,11 +101,13 @@ impl Connecting {
     /// 0-RTT data will proceed if the [`crypto::ClientConfig`][crate::crypto::ClientConfig]
     /// attempts to resume a previous TLS session. However, **the remote endpoint may not actually
     /// _accept_ the 0-RTT data**--yet still accept the connection attempt in general. This
-    /// possibility is conveyed through the [`ZeroRttAccepted`] future--when the handshake
-    /// completes, it resolves to true if the 0-RTT data was accepted and false if it was rejected.
-    /// If it was rejected, the existence of streams opened and other application data sent prior
-    /// to the handshake completing will not be conveyed to the remote application, and local
-    /// operations on them will return `ZeroRttRejected` errors.
+    /// possibility is conveyed through `ZeroRttRejected` errors on stream I/O methods, which may
+    /// arise when the handshake completes. If 0-RTT was rejected, the existence of streams opened
+    /// and other application data sent by a client prior to the handshake completing will not be
+    /// conveyed to the remote application. Clients which need to e.g. re-transmit rejected stream
+    /// data must take care to detect `ZeroRttRejected` errors even on finished streams opened
+    /// during 0-RTT, e.g. by awaiting an application-layer response on bidirectional streams, or
+    /// awaiting [`SendStream::stopped`] on unidirectional streams.
     ///
     /// A server may reject 0-RTT data at its discretion, but accepting 0-RTT data requires the
     /// relevant resumption state to be stored in the server, which servers may limit or lose for
@@ -113,8 +118,7 @@ impl Connecting {
     ///
     /// ## Incoming
     ///
-    /// For incoming connections, conversion to 0.5-RTT will always fully succeed. `into_0rtt` will
-    /// always return `Ok` and the [`ZeroRttAccepted`] will always resolve to true.
+    /// For incoming connections, conversion to 0.5-RTT will always succeed.
     ///
     /// If manually providing a [`crypto::ServerConfig`][crate::crypto::ServerConfig], check your
     /// implementation's docs for 0-RTT pitfalls.
@@ -137,7 +141,18 @@ impl Connecting {
 
         if is_ok {
             let conn = self.conn.take().unwrap();
-            Ok((Connection(conn), ZeroRttAccepted(self.connected)))
+            let connection = Connection(conn);
+            let accepted = connection.clone();
+            Ok((
+                connection,
+                ZeroRttAccepted(Box::pin(async move {
+                    if accepted.authenticated().await.is_err() {
+                        return false;
+                    }
+                    let state = accepted.0.state.lock("zero_rtt_accepted");
+                    state.inner.side().is_server() || state.inner.accepted_0rtt()
+                })),
+            ))
         } else {
             Err(self)
         }
@@ -216,16 +231,17 @@ impl Future for Connecting {
     }
 }
 
-/// Future that completes when a connection is fully established
+/// Future that completes when a connection is fully established.
 ///
-/// For clients, the resulting value indicates if 0-RTT was accepted. For servers, the resulting
-/// value is meaningless.
-pub struct ZeroRttAccepted(oneshot::Receiver<bool>);
+/// For clients, the resulting value indicates whether 0-RTT was accepted. For servers, the
+/// resulting value is always `true` after a successful handshake.
+pub struct ZeroRttAccepted(Pin<Box<dyn Future<Output = bool> + Send>>);
 
 impl Future for ZeroRttAccepted {
     type Output = bool;
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx).map(|x| x.unwrap_or(false))
+        self.0.as_mut().poll(cx)
     }
 }
 
@@ -328,6 +344,10 @@ impl Connection {
     }
 
     /// Accept the next incoming uni-directional stream
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancellation safe. If this does not resolve, no streams were consumed.
     pub fn accept_uni(&self) -> AcceptUni<'_> {
         AcceptUni {
             conn: &self.0,
@@ -345,6 +365,10 @@ impl Connection {
     /// [`open_bi()`]: crate::Connection::open_bi
     /// [`SendStream`]: crate::SendStream
     /// [`RecvStream`]: crate::RecvStream
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancellation safe. If this does not resolve, no streams were consumed.
     pub fn accept_bi(&self) -> AcceptBi<'_> {
         AcceptBi {
             conn: &self.0,
@@ -353,6 +377,10 @@ impl Connection {
     }
 
     /// Receive an application datagram
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancellation safe. If this does not resolve, no datagrams were consumed.
     pub fn read_datagram(&self) -> ReadDatagram<'_> {
         ReadDatagram {
             conn: &self.0,
@@ -556,6 +584,21 @@ impl Connection {
         self.0.state.lock("remote_address").inner.remote_address()
     }
 
+    /// Watch the peer's UDP address.
+    ///
+    /// If `ServerConfig::migration` is `true`, clients may change addresses at will, e.g. when
+    /// switching to a cellular internet connection.
+    pub fn watch_remote_address(&self) -> RemoteAddressWatcher {
+        let receiver = self
+            .0
+            .state
+            .lock("watch_remote_address")
+            .remote_address
+            .subscribe();
+
+        RemoteAddressWatcher { receiver }
+    }
+
     /// The local IP address which was used when the peer established
     /// the connection
     ///
@@ -587,6 +630,33 @@ impl Connection {
             .inner
             .congestion_state()
             .clone_box()
+    }
+
+    /// Succeeds when an incoming connection is proven not to be a replay attack.
+    ///
+    /// Only interesting for `Connection`s obtained from [`Connecting::into_0rtt`]. On 1-RTT
+    /// connections, always completes immediately. Contrast
+    /// [`handshake_confirmed`](Self::handshake_confirmed), which waits longer on clients e.g. to
+    /// confirm client authentication.
+    ///
+    /// For incoming connections, reads from [`RecvStream`]s are guaranteed not to arise from replay
+    /// attacks after this succeeds, even for streams accepted or read during 0-RTT. For outgoing
+    /// connections, streams opened after this succeeds will never be discarded by the server due to
+    /// 0-RTT rejection.
+    pub async fn authenticated(&self) -> Result<(), ConnectionError> {
+        let notified = {
+            let conn = self.0.state.lock("connected");
+            if let Some(e) = &conn.error {
+                return Err(e.clone());
+            }
+            if conn.connected {
+                return Ok(());
+            }
+            self.0.shared.connected.notified()
+        };
+        notified.await;
+        let conn = self.0.state.lock("connected");
+        conn.error.clone().map_or(Ok(()), Err)
     }
 
     /// Parameters negotiated during the handshake
@@ -932,6 +1002,25 @@ impl Future for SendDatagram<'_> {
     }
 }
 
+/// Watcher produced by [`Connection::watch_remote_address`]
+pub struct RemoteAddressWatcher {
+    receiver: watch::Receiver<SocketAddr>,
+}
+
+impl RemoteAddressWatcher {
+    /// Wait for an address change, mark it as seen and return the address.
+    ///
+    /// If multiple migrations occur between calls to `wait` or polls of the resulting future,
+    /// the last observed address will be returned, skipping intermediate updates.
+    pub async fn wait(&mut self) -> Option<SocketAddr> {
+        if self.receiver.changed().await.is_err() {
+            return None;
+        }
+
+        Some(*self.receiver.borrow())
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ConnectionRef(Arc<ConnectionInner>);
 
@@ -990,6 +1079,7 @@ pub(crate) struct Shared {
     datagram_received: Notify,
     datagrams_unblocked: Notify,
     closed: Notify,
+    connected: Arc<Notify>,
     /// Number of live handles that can used to initiate or handle I/O; excludes the driver
     ref_count: AtomicUsize,
 }
@@ -999,7 +1089,6 @@ pub(crate) struct State {
     driver: Option<Waker>,
     handle: ConnectionHandle,
     on_handshake_data: Option<oneshot::Sender<()>>,
-    on_connected: Option<oneshot::Sender<bool>>,
     connected: bool,
     handshake_confirmed: bool,
     timer: Option<Pin<Box<dyn AsyncTimer>>>,
@@ -1016,6 +1105,7 @@ pub(crate) struct State {
     send_buffer: Vec<u8>,
     /// We buffer a transmit when the underlying I/O would block
     buffered_transmit: Option<proto::Transmit>,
+    remote_address: watch::Sender<SocketAddr>,
 }
 
 impl State {
@@ -1026,16 +1116,16 @@ impl State {
         endpoint_events: mpsc::UnboundedSender<(ConnectionHandle, EndpointEvent)>,
         conn_events: mpsc::UnboundedReceiver<ConnectionEvent>,
         on_handshake_data: oneshot::Sender<()>,
-        on_connected: oneshot::Sender<bool>,
         sender: Pin<Box<dyn UdpSender>>,
         runtime: Arc<dyn Runtime>,
     ) -> Self {
+        let remote_address = inner.remote_address();
+
         Self {
             inner,
             driver: None,
             handle,
             on_handshake_data: Some(on_handshake_data),
-            on_connected: Some(on_connected),
             connected: false,
             handshake_confirmed: false,
             timer: None,
@@ -1050,6 +1140,7 @@ impl State {
             runtime,
             send_buffer: Vec::new(),
             buffered_transmit: None,
+            remote_address: watch::Sender::new(remote_address),
         }
     }
 
@@ -1160,10 +1251,7 @@ impl State {
                 }
                 Connected => {
                     self.connected = true;
-                    if let Some(x) = self.on_connected.take() {
-                        // We don't care if the on-connected future was dropped
-                        let _ = x.send(self.inner.accepted_0rtt());
-                    }
+                    shared.connected.notify_waiters();
                     if self.inner.side().is_client() && !self.inner.accepted_0rtt() {
                         // Wake up rejected 0-RTT streams so they can fail immediately with
                         // `ZeroRttRejected` errors.
@@ -1202,41 +1290,45 @@ impl State {
                     wake_stream_notify(id, &mut self.stopped);
                     wake_stream(id, &mut self.blocked_writers);
                 }
+                PathUpdated => {
+                    // Using `send_replace` since `send` does not update the value
+                    // when there are no subscribed receivers.
+                    let _ = self
+                        .remote_address
+                        .send_replace(self.inner.remote_address());
+                }
+                _ => {}
             }
         }
     }
 
     fn drive_timer(&mut self, cx: &mut Context<'_>) -> bool {
-        // Check whether we need to (re)set the timer. If so, we must poll again to ensure the
-        // timer is registered with the runtime (and check whether it's already
-        // expired).
-        match self.inner.poll_timeout() {
-            Some(deadline) => {
-                if let Some(delay) = &mut self.timer {
-                    // There is no need to reset the tokio timer if the deadline
-                    // did not change
-                    if self
-                        .timer_deadline
-                        .map(|current_deadline| current_deadline != deadline)
-                        .unwrap_or(true)
-                    {
-                        delay.as_mut().reset(deadline);
-                    }
-                } else {
-                    self.timer = Some(self.runtime.new_timer(deadline));
-                }
-                // Store the actual expiration time of the timer
-                self.timer_deadline = Some(deadline);
-            }
-            None => {
-                self.timer_deadline = None;
-                return false;
-            }
+        let Some(deadline) = self.inner.poll_timeout() else {
+            self.timer_deadline = None;
+            return false;
+        };
+
+        // Use the clock rather than the async timer to detect expiry: Sleep::poll
+        // respects Tokio's cooperative budget and can return Pending for elapsed
+        // deadlines.
+        let now = self.runtime.now();
+        if now >= deadline {
+            self.inner.handle_timeout(now);
+            self.timer_deadline = None;
+            return true;
         }
 
-        if self.timer_deadline.is_none() {
-            return false;
+        match &mut self.timer {
+            // Avoid resetting the timer when the deadline is unchanged.
+            Some(delay) if self.timer_deadline != Some(deadline) => {
+                delay.as_mut().reset(deadline);
+            }
+            None => {
+                self.timer = Some(self.runtime.new_timer(deadline));
+            }
+            _ => {}
         }
+        self.timer_deadline = Some(deadline);
 
         let delay = self
             .timer
@@ -1244,13 +1336,10 @@ impl State {
             .expect("timer must exist in this state")
             .as_mut();
         if delay.poll(cx).is_pending() {
-            // Since there wasn't a timeout event, there is nothing new
-            // for the connection to do
             return false;
         }
 
-        // A timer expired, so the caller needs to check for
-        // new transmits, which might cause new timers to be set.
+        // The deadline elapsed in the window between the clock check and poll.
         self.inner.handle_timeout(self.runtime.now());
         self.timer_deadline = None;
         true
@@ -1277,12 +1366,10 @@ impl State {
         shared.stream_incoming[Dir::Bi as usize].notify_waiters();
         shared.datagram_received.notify_waiters();
         shared.datagrams_unblocked.notify_waiters();
-        if let Some(x) = self.on_connected.take() {
-            let _ = x.send(false);
-        }
         shared.handshake_confirmed.notify_waiters();
         wake_all_notify(&mut self.stopped);
         shared.closed.notify_waiters();
+        shared.connected.notify_waiters();
     }
 
     fn close(&mut self, error_code: VarInt, reason: Bytes, shared: &Shared) {
@@ -1314,7 +1401,7 @@ impl Drop for State {
             // Ensure the endpoint can tidy up
             let _ = self
                 .endpoint_events
-                .send((self.handle, proto::EndpointEvent::drained()));
+                .send((self.handle, EndpointEvent::drained()));
         }
     }
 }

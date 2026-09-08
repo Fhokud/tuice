@@ -1,9 +1,10 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory, SpaceId};
+use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
 use crate::Instant;
 use crate::connection::RttEstimator;
+use crate::packet::SpaceId;
 
 /// A simple, standard congestion controller
 #[derive(Debug, Clone)]
@@ -122,6 +123,7 @@ impl Controller for NewReno {
             congestion_window: self.window(),
             ssthresh: Some(self.ssthresh),
             pacing_rate: None,
+            bandwidth_estimate: None,
             send_quantum: None,
         }
     }

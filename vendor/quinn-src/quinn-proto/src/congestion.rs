@@ -1,11 +1,10 @@
 //! Logic for controlling the rate at which data is sent
 
 use crate::connection::RttEstimator;
+pub use crate::packet::SpaceId;
 use crate::{Duration, Instant};
 use std::any::Any;
 use std::sync::Arc;
-
-pub use crate::packet::SpaceId;
 
 mod bbr3;
 mod cubic;
@@ -22,13 +21,23 @@ pub trait Controller: Send + Sync {
     fn on_sent(&mut self, now: Instant, bytes: u64, last_packet_number: u64) {}
 
     /// One packet was just sent
+    ///
+    /// `packet_number` identifies the packet only within `space`; every packet number space
+    /// numbers independently from zero.
     #[allow(unused_variables)]
-    fn on_packet_sent(&mut self, now: Instant, bytes: u16, packet_number: u64) {}
+    fn on_packet_sent(&mut self, now: Instant, bytes: u16, packet_number: u64, space: SpaceId) {}
+
+    /// The connection had data to send but was blocked by the congestion window
+    ///
+    /// Reports the spec's `C.is_cwnd_limited` signal to the controller: the sender fully utilized
+    /// the congestion window at this point in the current round trip.
+    fn on_cwnd_limited(&mut self) {}
 
     /// Packet deliveries were confirmed
     ///
     /// `app_limited` indicates whether the connection was blocked on outgoing
     /// application data prior to receiving these acknowledgements.
+    /// `pn` identifies the packet only within `space`.
     #[allow(unused_variables)]
     fn on_ack(
         &mut self,
@@ -61,7 +70,7 @@ pub trait Controller: Send + Sync {
     /// lost.
     /// `lost_bytes` indicates how many bytes were lost. This value will be 0 for ECN triggers.
     /// `largest_lost` indicates the packet number of the packet with the highest packet number
-    /// in the congestion event.
+    /// in the congestion event, within `space`.
     fn on_congestion_event(
         &mut self,
         now: Instant,
@@ -74,8 +83,17 @@ pub trait Controller: Send + Sync {
     );
 
     /// One packet was just lost
+    ///
+    /// `packet_number` identifies the packet only within `space`.
     #[allow(unused_variables)]
-    fn on_packet_lost(&mut self, lost_bytes: u16, packet_number: u64, now: Instant) {}
+    fn on_packet_lost(
+        &mut self,
+        lost_bytes: u16,
+        packet_number: u64,
+        space: SpaceId,
+        now: Instant,
+    ) {
+    }
 
     /// Packets were incorrectly deemed lost
     ///
@@ -106,7 +124,8 @@ pub trait Controller: Send + Sync {
     /// Number of ack-eliciting bytes that may be in flight
     fn window(&self) -> u64;
 
-    /// Retrieve implementation-specific metrics used to populate `qlog` traces when they are enabled
+    /// Retrieve implementation-specific metrics used to populate connection statistics and `qlog`
+    /// traces when they are enabled
     /// This is also used to alter the pacing of the connection with
     /// `pacing_rate` and `send_quantum`
     fn metrics(&self) -> ControllerMetrics {
@@ -114,6 +133,7 @@ pub trait Controller: Send + Sync {
             congestion_window: self.window(),
             ssthresh: None,
             pacing_rate: None,
+            bandwidth_estimate: None,
             send_quantum: None,
         }
     }
@@ -140,6 +160,8 @@ pub struct ControllerMetrics {
     pub ssthresh: Option<u64>,
     /// Pacing rate (bytes/s)
     pub pacing_rate: Option<u64>,
+    /// Estimated sustainable path bandwidth (bytes/s)
+    pub bandwidth_estimate: Option<u64>,
     /// Send Quantum (bytes) used to control the size of packet bursts
     pub send_quantum: Option<u64>,
 }
