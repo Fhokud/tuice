@@ -5,7 +5,7 @@ use socks5_server::{
 	Associate, Bind, Connect,
 	connection::{associate, bind, connect},
 };
-use tokio::io::{self, AsyncWriteExt};
+use tokio::io;
 use tracing::{debug, info, warn};
 use tuic_core::Address as TuicAddress;
 
