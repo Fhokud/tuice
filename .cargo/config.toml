@@ -28,7 +28,11 @@ rustflags = ["-C", "target-cpu=native"]
 #CXXFLAGS = "-O3 -march=lunarlake -mtune=lunarlake"
 CFLAGS_x86_64_unknown_linux_musl = "-O3 -march=sandybridge -mtune=sandybridge"
 CXXFLAGS_x86_64_unknown_linux_musl = "-O3 -march=sandybridge -mtune=sandybridge"
+LDFLAGS_x86_64_unknown_linux_musl = "-fuse-ld=mold"
+
 CFLAGS_x86_64_unknown_linux_gnu = "-O3 -march=sandybridge -mtune=sandybridge"
 CXXFLAGS_x86_64_unknown_linux_gnu = "-O3 -march=sandybridge -mtune=sandybridge"
+LDFLAGS_x86_64_unknown_linux_gnu = "-fuse-ld=mold"
+
 CFLAGS_x86_64_pc_windows_gnu = "-O3 -march=native -mtune=native"
 CXXFLAGS_x86_64_pc_windows_gnu = "-O3 -march=native -mtune=native"
