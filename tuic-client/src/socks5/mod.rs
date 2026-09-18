@@ -23,6 +23,7 @@ pub use self::udp_session::UdpSession;
 
 pub struct Server {
 	inner: Socks5Server,
+	optimistic_open: bool,
 	dual_stack: Option<bool>,
 	max_pkt_size: usize,
 	next_assoc_id: AtomicU16,
@@ -81,10 +82,17 @@ impl Server {
 
 		Ok(Self {
 			inner: Socks5Server::new(socket, auth),
+			optimistic_open: true,
 			dual_stack,
 			max_pkt_size,
 			next_assoc_id: AtomicU16::new(0),
 		})
+	}
+
+	/// Configure optimistic SOCKS5 CONNECT replies (enabled by default).
+	pub fn with_optimistic_open(mut self, optimistic_open: bool) -> Self {
+		self.optimistic_open = optimistic_open;
+		self
 	}
 
 	pub async fn start(ctx: Arc<crate::AppContext>) {

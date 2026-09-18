@@ -102,15 +102,18 @@ impl AppContext {
 pub async fn run(cfg: Config) -> eyre::Result<()> {
 	let startup_mode = cfg.relay.startup_mode;
 	let conn_mgr = Arc::new(connection::ConnectionManager::build(cfg.relay).await?);
-	let socks5 = Arc::new(socks5::Server::new(
-		cfg.local
-			.server
-			.ok_or_else(|| eyre::eyre!("`local.server` (SOCKS5 listen address) is required"))?,
-		cfg.local.dual_stack,
-		cfg.local.max_packet_size,
-		cfg.local.username,
-		cfg.local.password,
-	)?);
+	let socks5 = Arc::new(
+		socks5::Server::new(
+			cfg.local
+				.server
+				.ok_or_else(|| eyre::eyre!("`local.server` (SOCKS5 listen address) is required"))?,
+			cfg.local.dual_stack,
+			cfg.local.max_packet_size,
+			cfg.local.username,
+			cfg.local.password,
+		)?
+		.with_optimistic_open(cfg.local.optimistic_open),
+	);
 	let ctx = Arc::new(AppContext {
 		conn_mgr,
 		socks5,
