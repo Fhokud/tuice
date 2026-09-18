@@ -3,7 +3,7 @@ use std::sync::Arc;
 use socks5_proto::{Address, Reply};
 use socks5_server::{
 	Associate, Bind, Connect,
-	connection::{associate, bind, connect},
+	connection::{associate::state as associate, bind::state as bind, connect::state as connect},
 };
 use tokio::io;
 use tracing::{debug, info, warn};
@@ -44,7 +44,11 @@ impl Server {
 				let local_addr = session.local_addr().unwrap();
 				info!("[socks5] [{peer_addr}] [associate] [{assoc_id:#06x}] bound to {local_addr}");
 
-				let mut assoc = match assoc.reply(Reply::Succeeded, Address::SocketAddress(local_addr)).await {
+				let mut assoc = match assoc
+					.reply(Reply::Succeeded, Address::SocketAddress(local_addr))
+					.await
+					.map_err(|(err, _)| err)
+				{
 					Ok(assoc) => assoc,
 					Err(err) => {
 						warn!("[socks5] [{peer_addr}] [associate] [{assoc_id:#06x}] command reply error: {err}");
@@ -72,7 +76,9 @@ impl Server {
 						let ctx_fwd = ctx_loop.clone();
 						let forward = async move {
 							let target_addr = match target_addr {
-								Address::DomainAddress(domain, port) => TuicAddress::DomainAddress(domain, port),
+								Address::DomainAddress(domain, port) => {
+									TuicAddress::DomainAddress(String::from_utf8(domain)?, port)
+								}
 								Address::SocketAddress(addr) => TuicAddress::SocketAddress(addr),
 							};
 
@@ -97,7 +103,7 @@ impl Server {
 				};
 
 				match tokio::select! {
-					res = assoc.wait_until_closed() => res,
+					res = assoc.wait_close() => res,
 					_ = handle_local_incoming_pkt => unreachable!(),
 				} {
 					Ok(()) => {}
@@ -121,9 +127,13 @@ impl Server {
 			Err(err) => {
 				warn!("[socks5] [{peer_addr}] [associate] [{assoc_id:#06x}] failed setting up UDP associate session: {err}");
 
-				match assoc.reply(Reply::GeneralFailure, Address::unspecified()).await {
+				match assoc
+					.reply(Reply::GeneralFailure, Address::unspecified())
+					.await
+					.map_err(|(err, _)| err)
+				{
 					Ok(mut assoc) => {
-						let _ = assoc.shutdown().await;
+						let _ = assoc.close().await;
 					}
 					Err(err) => {
 						warn!("[socks5] [{peer_addr}] [associate] [{assoc_id:#06x}] command reply error: {err}")
@@ -137,9 +147,13 @@ impl Server {
 		let peer_addr = bind.peer_addr().unwrap();
 		warn!("[socks5] [{peer_addr}] [bind] command not supported");
 
-		match bind.reply(Reply::CommandNotSupported, Address::unspecified()).await {
+		match bind
+			.reply(Reply::CommandNotSupported, Address::unspecified())
+			.await
+			.map_err(|(err, _)| err)
+		{
 			Ok(mut bind) => {
-				let _ = bind.shutdown().await;
+				let _ = bind.close().await;
 			}
 			Err(err) => warn!("[socks5] [{peer_addr}] [bind] command reply error: {err}"),
 		}
@@ -148,7 +162,14 @@ impl Server {
 	pub async fn handle_connect(conn: Connect<connect::NeedReply>, addr: Address, ctx: Arc<crate::AppContext>) {
 		let peer_addr = conn.peer_addr().unwrap();
 		let target_addr = match addr {
-			Address::DomainAddress(domain, port) => TuicAddress::DomainAddress(domain, port),
+			Address::DomainAddress(domain, port) => match String::from_utf8(domain) {
+				Ok(domain) => TuicAddress::DomainAddress(domain, port),
+				Err(err) => {
+					warn!("[socks5] [{peer_addr}] invalid target domain: {err}");
+					let _ = conn.reply(Reply::AddressTypeNotSupported, Address::unspecified()).await;
+					return;
+				}
+			},
 			Address::SocketAddress(addr) => TuicAddress::SocketAddress(addr),
 		};
 
@@ -157,7 +178,7 @@ impl Server {
 		match connect_with_reply(conn, ctx.socks5.optimistic_open, relay).await {
 			Ok((mut conn, mut relay)) => {
 				if let Err(err) = io::copy_bidirectional(&mut conn, &mut relay).await {
-					let _ = conn.shutdown().await;
+					let _ = conn.close().await;
 					let _ = relay.reset(ERROR_CODE);
 					warn!("[socks5] [{peer_addr}] [connect] [{target_addr}] TCP stream relaying error: {err}");
 				}
@@ -176,24 +197,33 @@ async fn connect_with_reply<T>(
 	relay: impl std::future::Future<Output = Result<T, crate::error::Error>>,
 ) -> io::Result<(Connect<connect::Ready>, T)> {
 	if optimistic_open {
-		let mut conn = conn.reply(Reply::Succeeded, Address::unspecified()).await?;
+		let mut conn = conn
+			.reply(Reply::Succeeded, Address::unspecified())
+			.await
+			.map_err(|(err, _)| err)?;
 		match relay.await {
 			Ok(relay) => Ok((conn, relay)),
 			Err(err) => {
 				// Success has already been sent: never send a second SOCKS5 reply.
-				let _ = conn.shutdown().await;
+				let _ = conn.close().await;
 				Err(io::Error::other(err))
 			}
 		}
 	} else {
 		match relay.await {
 			Ok(relay) => {
-				let conn = conn.reply(Reply::Succeeded, Address::unspecified()).await?;
+				let conn = conn
+					.reply(Reply::Succeeded, Address::unspecified())
+					.await
+					.map_err(|(err, _)| err)?;
 				Ok((conn, relay))
 			}
 			Err(err) => {
-				let mut conn = conn.reply(Reply::GeneralFailure, Address::unspecified()).await?;
-				let _ = conn.shutdown().await;
+				let mut conn = conn
+					.reply(Reply::GeneralFailure, Address::unspecified())
+					.await
+					.map_err(|(err, _)| err)?;
+				let _ = conn.close().await;
 				Err(io::Error::other(err))
 			}
 		}
@@ -204,7 +234,7 @@ async fn connect_with_reply<T>(
 mod tests {
 	use std::{sync::Arc, time::Duration};
 
-	use socks5_server::{Connection, Server as Socks5Server, auth::NoAuth};
+	use socks5_server::{Command, Server as Socks5Server, auth::NoAuth};
 	use tokio::{
 		io::{AsyncReadExt, AsyncWriteExt},
 		net::{TcpListener, TcpStream},
@@ -221,7 +251,8 @@ mod tests {
 		let (release, wait) = oneshot::channel::<()>();
 		let task = tokio::spawn(async move {
 			let (conn, _) = server.accept().await.unwrap();
-			let Connection::Connect(conn, _) = conn.handshake().await.unwrap() else {
+			let (conn, ()) = conn.authenticate().await.unwrap();
+			let Command::Connect(conn, _) = conn.wait().await.unwrap() else {
 				panic!("expected CONNECT");
 			};
 			let result = connect_with_reply(conn, optimistic_open, async {
