@@ -96,6 +96,7 @@ target = "armv7-unknown-linux-musleabi"
 release-name = "armv7-linux-musl"
 tool = "cross"
 extra-args = "--no-default-features --features ring"
+rustflags = "-C target-feature=+sha2,+aes"
 
 # ARMv7 Linux (MUSL - hard float ABI, statically linked)
 [[target]]
@@ -104,6 +105,7 @@ target = "armv7-unknown-linux-musleabihf"
 release-name = "armv7-linux-muslhf"
 tool = "cross"
 extra-args = "--no-default-features --features ring"
+rustflags = "-C target-feature=+sha2,+aes"
 
 # ==================== Android Targets ====================
 
