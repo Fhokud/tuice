@@ -56,7 +56,8 @@ impl Authenticated {
 		}
 
 		// Create the notified future BEFORE the double-check
-		// This ensures we don't miss notifications that happen between check and await
+		// This ensures we don't miss notifications that happen between check
+		// and await
 		let notified = self.0.notify.notified();
 
 		// Double-check after creating the future to avoid unnecessary wait

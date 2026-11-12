@@ -71,10 +71,10 @@ fn main() -> eyre::Result<()> {
 
 	let rt = builder.enable_all().build()?;
 
-	// `run` never returns on its own (the SOCKS5 accept loop runs forever), so a
-	// plain Ctrl-C would hard-kill the process and skip the profiler's `Drop`.
-	// Under `dhat-heap`, race it against Ctrl-C so shutdown is graceful and
-	// `dhat-heap.json` gets written.
+	// `run` never returns on its own (the SOCKS5 accept loop runs forever), so
+	// a plain Ctrl-C would hard-kill the process and skip the profiler's
+	// `Drop`. Under `dhat-heap`, race it against Ctrl-C so shutdown is graceful
+	// and `dhat-heap.json` gets written.
 	#[cfg(feature = "dhat-heap")]
 	let result = rt.block_on(async move {
 		tokio::select! {

@@ -299,7 +299,8 @@ pub async fn run_socks5_server(
 					let password = auth_password.clone();
 
 					tokio::spawn(async move {
-						// Handle authentication and read command based on configuration
+						// Handle authentication and read command based on
+						// configuration
 						let result = match (username, password) {
 							(Some(u), Some(p)) => {
 								info!("[{} SOCKS5 Server] Using password authentication", test_name_clone);
@@ -341,7 +342,8 @@ pub async fn run_socks5_server(
 									Socks5Command::UDPAssociate => {
 										info!("[{} SOCKS5 Server] Handling UDP ASSOCIATE request", test_name_clone);
 
-										// Use 127.0.0.1 as the reply address for UDP ASSOCIATE
+										// Use 127.0.0.1 as the reply address
+										// for UDP ASSOCIATE
 										let reply_ip = "127.0.0.1".parse().unwrap();
 										if let Err(e) = run_udp_proxy(proto, &target_addr, None, reply_ip, None).await {
 											error!("[{} SOCKS5 Server] UDP proxy error: {:?}", test_name_clone, e);

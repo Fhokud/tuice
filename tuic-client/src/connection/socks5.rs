@@ -23,7 +23,8 @@ pub struct Socks5UdpSocket {
 
 impl Socks5UdpSocket {
 	pub fn new(socket: UdpSocket, relay_addr: SocketAddr, buffer_size: usize) -> Self {
-		// Ensure minimum buffer size of 1522 bytes (1500 MTU + 22 SOCKS5 header)
+		// Ensure minimum buffer size of 1522 bytes (1500 MTU + 22 SOCKS5
+		// header)
 		let buffer_size = buffer_size.max(1522);
 		let is_ipv6 = socket.local_addr().map(|a| a.is_ipv6()).unwrap_or(false);
 		Self {
@@ -116,7 +117,8 @@ impl AsyncUdpSocket for Socks5UdpSocket {
 						Poll::Ready(Ok(1))
 					}
 				} else {
-					// Invalid SOCKS5 UDP packet; drop it and wait for the next readable event.
+					// Invalid SOCKS5 UDP packet; drop it and wait for the next
+					// readable event.
 					debug!("[socks5] dropped invalid SOCKS5 UDP packet from {:?}", from_addr);
 					Poll::Pending
 				}

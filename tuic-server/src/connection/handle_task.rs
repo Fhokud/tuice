@@ -211,7 +211,8 @@ impl Connection {
 			let mut stream = if outbound.kind.eq_ignore_ascii_case("socks5") {
 				self.connect_via_socks5(outbound, conn.addr(), hijack).await?
 			} else {
-				// Resolve again if outbound/ip_mode differs or hijack is requested
+				// Resolve again if outbound/ip_mode differs or hijack is
+				// requested
 				let addrs = self.resolve_and_filter_addresses(conn.addr(), outbound, hijack).await?;
 				self.connect_to_addresses(addrs, outbound).await?
 			};
@@ -249,7 +250,8 @@ impl Connection {
 		outbound: &OutboundRule,
 		hijack: Option<IpAddr>,
 	) -> eyre::Result<Vec<SocketAddr>> {
-		// If hijack is specified, bypass DNS and use hijack IP with original port
+		// If hijack is specified, bypass DNS and use hijack IP with original
+		// port
 		if let Some(hijack_ip) = hijack {
 			let port = addr.port();
 			let sa = SocketAddr::new(hijack_ip, port);
@@ -329,9 +331,10 @@ impl Connection {
 				src_addr = addr
 			);
 
-			// Resolve the target and run ACL/outbound policy BEFORE creating a session, so
-			// packets that are dropped, blocked, or fail to resolve don't leak an outbound
-			// socket pair (+ listen task) for the whole `stream_timeout` window.
+			// Resolve the target and run ACL/outbound policy BEFORE creating a
+			// session, so packets that are dropped, blocked, or fail to resolve
+			// don't leak an outbound socket pair (+ listen task) for the whole
+			// `stream_timeout` window.
 			let initial_addrs: Vec<SocketAddr> = resolve_dns(&addr).await?.collect();
 			if initial_addrs.is_empty() {
 				return Err(Error::from(IoError::new(ErrorKind::NotFound, "no address resolved")));
@@ -355,15 +358,16 @@ impl Connection {
 			// Evaluate outbound policy for UDP
 			let outbound = self.select_outbound_rule(&outbound_name);
 			if outbound.kind.eq_ignore_ascii_case("socks5") {
-				// Block UDP by default when a SOCKS5 outbound is selected, unless explicitly
-				// allowed
+				// Block UDP by default when a SOCKS5 outbound is selected,
+				// unless explicitly allowed
 				let allow_udp = outbound.allow_udp.unwrap_or(false);
 				if !allow_udp {
 					warn!(
 						"[UDP-OUT-SOCKS5] [{assoc_id:#06x}] [from-{mode}] [{pkt_id:#06x}] to {src_addr} blocked by ACL",
 						src_addr = addr
 					);
-					// Silently drop UDP to avoid leaking QUIC/HTTP3 when SOCKS5 is requested
+					// Silently drop UDP to avoid leaking QUIC/HTTP3 when SOCKS5
+					// is requested
 					return Ok(());
 				} else {
 					// We don't support UDP via SOCKS5 yet; fall back to direct
@@ -373,7 +377,8 @@ impl Connection {
 					);
 				}
 			} else if !outbound.kind.eq_ignore_ascii_case("direct") {
-				// Outbound other than direct is not supported for UDP yet; proceed as direct
+				// Outbound other than direct is not supported for UDP yet;
+				// proceed as direct
 				warn!("[UDP-OUT] [{assoc_id:#06x}] outbound '{outbound_name}' not supported; using direct");
 			}
 
@@ -384,9 +389,9 @@ impl Connection {
 				initial_addrs[0]
 			};
 
-			// Get-or-create the UDP session (binding its outbound sockets) only now that
-			// the packet has passed ACL/outbound policy — never for dropped/blocked
-			// packets.
+			// Get-or-create the UDP session (binding its outbound sockets) only
+			// now that the packet has passed ACL/outbound policy — never for
+			// dropped/blocked packets.
 			let guard = self.udp_sessions.read().await;
 			let session = guard.get(&assoc_id).map(|v| v.to_owned());
 			drop(guard);

@@ -224,7 +224,8 @@ async fn test_server_client_integration() -> eyre::Result<()> {
 	#[cfg(feature = "ring")]
 	let _ = rustls::crypto::ring::default_provider().install_default();
 
-	// Initialize tracing subscriber to capture client/server logs at DEBUG level
+	// Initialize tracing subscriber to capture client/server logs at DEBUG
+	// level
 	let _ = tracing_subscriber::fmt()
 		.with_max_level(tracing::Level::DEBUG)
 		.with_test_writer()
@@ -623,8 +624,8 @@ async fn test_tcp_udp_forward_integration() -> eyre::Result<()> {
 		},
 		local: tuic_client::config::Local {
 			// The SOCKS5 listener is required by the client runtime even though
-			// this test doesn't exercise it; pick a port distinct from the other
-			// integration tests.
+			// this test doesn't exercise it; pick a port distinct from the
+			// other integration tests.
 			server: "127.0.0.1:1083".parse().map(Some)?,
 			username: None,
 			password: None,

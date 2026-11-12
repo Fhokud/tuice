@@ -68,7 +68,8 @@ pub async fn start_acme(
 		loop {
 			match state.next().await {
 				Some(Ok(event)) => match event {
-					// Requesting certificate for the first time or renewing an existing one
+					// Requesting certificate for the first time or renewing an
+					// existing one
 					rustls_acme::EventOk::AccountCacheStore => {
 						info!("ACME event: AccountCacheStore");
 						let cancel = Arc::new(ctx.cancel.child_token());

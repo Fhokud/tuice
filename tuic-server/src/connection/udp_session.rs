@@ -128,8 +128,9 @@ impl UdpSession {
 						.instrument(span.clone()),
 				);
 			}
-			// Only drop our own map entry. If this assoc_id was re-used and replaced by a
-			// newer session while we were shutting down, leave that entry intact.
+			// Only drop our own map entry. If this assoc_id was re-used and
+			// replaced by a newer session while we were shutting down, leave
+			// that entry intact.
 			let self_weak = Arc::downgrade(&session_listening);
 			let mut sessions = session_listening.conn.udp_sessions.write().await;
 			if sessions.get(&assoc_id).is_some_and(|entry| entry.ptr_eq(&self_weak)) {

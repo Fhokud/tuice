@@ -294,8 +294,8 @@ impl Config {
 		let figmet = Figment::from(Serialized::defaults(Config::default()));
 		let format;
 
-		// Priority: TUIC_FORCE_TOML > TUIC_CONFIG_FORMAT > file extension > content
-		// inference
+		// Priority: TUIC_FORCE_TOML > TUIC_CONFIG_FORMAT > file extension >
+		// content inference
 		if env_state.tuic_force_toml {
 			format = ConfigFormat::Toml;
 		} else if let Some(ref env_format) = env_state.tuic_config_format {
@@ -495,7 +495,8 @@ mod tests {
 		test_parse_config_with_env(config_content, extension, EnvState::default())
 	}
 
-	// Helper function for testing config file parsing with custom environment state
+	// Helper function for testing config file parsing with custom environment
+	// state
 	fn test_parse_config_with_env(config_content: &str, extension: &str, env_state: EnvState) -> eyre::Result<Config> {
 		use std::fs;
 

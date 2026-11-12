@@ -152,9 +152,10 @@ fn build_backend_route(camouflage: &CamouflageConfig) -> eyre::Result<(Url, Opti
 		backend
 			.set_host(Some(reverse_proxy_hostname))
 			.map_err(|_| eyre::eyre!("invalid `camouflage.reverse_proxy_hostname`: {reverse_proxy_hostname}"))?;
-		// Keep the backend connection endpoint separate from the HTTP authority.
-		// In particular, a private/NAT port such as 450 must not appear in the
-		// authority seen by the backend and used to generate absolute URLs.
+		// Keep the backend connection endpoint separate from the HTTP
+		// authority. In particular, a private/NAT port such as 450 must not
+		// appear in the authority seen by the backend and used to generate
+		// absolute URLs.
 		backend
 			.set_port(None)
 			.map_err(|_| eyre::eyre!("invalid backend URL scheme: {}", backend.scheme()))?;

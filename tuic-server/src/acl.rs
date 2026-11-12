@@ -314,7 +314,8 @@ pub(crate) fn parse_acl_rule(rule: &str) -> eyre::Result<AclRule> {
 	for pair in rule_pair.into_inner() {
 		match pair.as_rule() {
 			Rule::outbound => outbound = pair.as_str().to_string(),
-			// Address variants appear directly (address is a silent choice rule)
+			// Address variants appear directly (address is a silent choice
+			// rule)
 			Rule::localhost_kw
 			| Rule::suffix_localhost
 			| Rule::private_kw

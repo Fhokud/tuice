@@ -66,8 +66,8 @@ impl ConnectionManager {
 		// Load certificates for TLS
 		let certs = utils::load_certs(cfg.certificates, cfg.disable_native_certs)?;
 
-		// Build TLS client config, optionally skipping certificate verification (for
-		// development/testing)
+		// Build TLS client config, optionally skipping certificate verification
+		// (for development/testing)
 		let mut crypto = if cfg.skip_cert_verify {
 			#[derive(Debug)]
 			struct SkipServerVerification(Arc<rustls::crypto::CryptoProvider>);
@@ -82,8 +82,8 @@ impl ConnectionManager {
 				}
 			}
 
-			// Custom certificate verifier that skips all checks (dangerous, use only for
-			// testing)
+			// Custom certificate verifier that skips all checks (dangerous, use
+			// only for testing)
 			impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
 				fn verify_server_cert(
 					&self,
@@ -139,14 +139,14 @@ impl ConnectionManager {
 		let mut tp_cfg = TransportConfig::default();
 
 		tp_cfg
-            .max_concurrent_bidi_streams(VarInt::from(cfg.max_concurrent_streams))
-            .max_concurrent_uni_streams(VarInt::from(cfg.max_concurrent_streams))
-            .send_window(cfg.send_window)
-            .stream_receive_window(VarInt::from_u32(cfg.receive_window))
-            .max_idle_timeout(None)
-            //.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(10))))
-            .initial_mtu(cfg.initial_mtu)
-            .min_mtu(cfg.min_mtu);
+			.max_concurrent_bidi_streams(VarInt::from(cfg.max_concurrent_streams))
+			.max_concurrent_uni_streams(VarInt::from(cfg.max_concurrent_streams))
+			.send_window(cfg.send_window)
+			.stream_receive_window(VarInt::from_u32(cfg.receive_window))
+			.max_idle_timeout(None)
+			//.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(10))))
+			.initial_mtu(cfg.initial_mtu)
+			.min_mtu(cfg.min_mtu);
 
 		if !cfg.gso {
 			tp_cfg.enable_segmentation_offload(false);
@@ -165,7 +165,8 @@ impl ConnectionManager {
 
 		config.transport_config(Arc::new(tp_cfg));
 
-		// Prepare server address and create the primary endpoint with IPv4 binding
+		// Prepare server address and create the primary endpoint with IPv4
+		// binding
 		let server = ServerAddr::with_sni(cfg.server.0, cfg.server.1, cfg.ip, cfg.ipstack_prefer, cfg.sni);
 
 		let (ep, socks5_ctrl) = if let Some(proxy_cfg) = cfg.proxy {
@@ -363,7 +364,8 @@ struct Endpoint {
 	gc_interval: Duration,
 	gc_lifetime: Duration,
 	// SOCKS5 control TCP stream for UDP ASSOCIATE: this must be kept alive to
-	// maintain the UDP relay session, since closing it invalidates the relay address.
+	// maintain the UDP relay session, since closing it invalidates the relay
+	// address.
 	socks5_ctrl: Option<tokio::net::TcpStream>,
 }
 
@@ -372,11 +374,12 @@ impl Endpoint {
 	/// for IP family
 	async fn connect(&self, socks5_udp_sessions: Socks5Sessions, fwd_udp_sessions: FwdSessions) -> Result<Connection, Error> {
 		let server_addr = self.server.resolve().await?.next().context("no resolved address")?;
-		// Check if endpoint's local address IP family matches the server's resolved IP
-		// family. When using SOCKS5 proxy, rebinding is skipped because the endpoint is
-		// already bound to the IP family of the SOCKS5 relay address. The SOCKS5 proxy
-		// handles the actual connection to the target server, making the target
-		// server's IP family irrelevant to the local socket's binding.
+		// Check if endpoint's local address IP family matches the server's
+		// resolved IP family. When using SOCKS5 proxy, rebinding is skipped
+		// because the endpoint is already bound to the IP family of the SOCKS5
+		// relay address. The SOCKS5 proxy handles the actual connection to the
+		// target server, making the target server's IP family irrelevant to the
+		// local socket's binding.
 		let mut need_rebind = false;
 		if self.socks5_ctrl.is_none() && self.ep.local_addr()?.is_ipv4() && !server_addr.ip().is_ipv4() {
 			need_rebind = true;

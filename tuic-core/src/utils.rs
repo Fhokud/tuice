@@ -170,7 +170,8 @@ where
 	R: AsyncRead + Unpin,
 {
 	// Read up to 8KB for TLS handshake
-	// Typical ClientHello is 200-400 bytes, but can be larger with many extensions
+	// Typical ClientHello is 200-400 bytes, but can be larger with many
+	// extensions
 	const MAX_HEADER_SIZE: usize = 8192;
 	let mut buffer = vec![0u8; MAX_HEADER_SIZE];
 

@@ -615,8 +615,8 @@ fn infer_config_format(content: &str) -> ConfigFormat {
 		// YAML key-value with colon and typically followed by space or newline
 		if let Some(colon_pos) = trimmed_line.find(':') {
 			let after_colon = &trimmed_line[colon_pos + 1..];
-			// In YAML, after colon there's usually a space, newline, or it's at the end
-			// In TOML, = is used instead of :
+			// In YAML, after colon there's usually a space, newline, or it's at
+			// the end In TOML, = is used instead of :
 			return after_colon.is_empty() || after_colon.starts_with(' ') || after_colon.starts_with('\t');
 		}
 		false
@@ -1021,16 +1021,18 @@ mod tests {
 		let result = test_parse_config(config, ".json").await;
 		assert!(result.is_err());
 
-		// Test non-existent configuration files - should fail when trying to parse
+		// Test non-existent configuration files - should fail when trying to
+		// parse
 		let result = Cli::try_parse_from(vec!["test_binary", "--config", "non_existent.toml"]);
-		// This will succeed at parsing CLI level, but fail when actually loading the
-		// file
+		// This will succeed at parsing CLI level, but fail when actually
+		// loading the file
 		if let Ok(cli) = result {
 			assert!(cli.config.is_some());
 			assert!(!cli.config.unwrap().exists());
 		}
 
-		// Test missing configuration file parameters - should fail at CLI parsing level
+		// Test missing configuration file parameters - should fail at CLI
+		// parsing level
 		let result = Cli::try_parse_from(vec!["test_binary"]);
 		// This should succeed because --config is optional in CLI definition
 		assert!(result.is_ok());
@@ -1090,8 +1092,8 @@ reverse_proxy_url = "https://127.0.0.1:443"
 
 	#[tokio::test]
 	async fn test_outbound_valid_with_default() {
-		// Test that when named outbound rules exist with a proper default, validation
-		// passes
+		// Test that when named outbound rules exist with a proper default,
+		// validation passes
 		let config = include_str!("../tests/config/outbound_valid_with_default.toml");
 
 		let result = test_parse_config(config, ".toml").await.unwrap();
@@ -1174,7 +1176,8 @@ reverse_proxy_url = "https://127.0.0.1:443"
 		assert_eq!(ports1.entries[0].port_spec, AclPortSpec::Single(53));
 		assert!(rule1.hijack.is_none());
 
-		// Test complex ports rule: "allow localhost udp/53,tcp/80,tcp/443,udp/443"
+		// Test complex ports rule: "allow localhost
+		// udp/53,tcp/80,tcp/443,udp/443"
 		let rule2 = &result.acl[1];
 		assert_eq!(rule2.outbound, "allow");
 		assert_eq!(rule2.addr, AclAddress::Localhost);
@@ -1698,7 +1701,8 @@ reverse_proxy_url = "https://127.0.0.1:443"
 
 	#[tokio::test]
 	async fn test_env_state_in_docker_inference() {
-		// Test IN_DOCKER=true triggers content inference for files without extension
+		// Test IN_DOCKER=true triggers content inference for files without
+		// extension
 		let config_content = include_str!("../tests/config/env_docker_inference.config");
 
 		let env_state = EnvState {
@@ -1766,7 +1770,8 @@ reverse_proxy_url = "https://127.0.0.1:443"
 	#[tokio::test]
 	async fn test_env_state_from_system() {
 		// Test EnvState::from_system() reads environment variables correctly
-		// Note: This test doesn't actually set env vars, just tests the structure
+		// Note: This test doesn't actually set env vars, just tests the
+		// structure
 		let env_state = EnvState::from_system();
 
 		// Should not panic and return a valid EnvState
