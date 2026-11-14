@@ -142,7 +142,13 @@ impl ConnectionManager {
             .max_concurrent_bidi_streams(VarInt::from(cfg.max_concurrent_streams))
             .max_concurrent_uni_streams(VarInt::from(cfg.max_concurrent_streams))
             .send_window(cfg.send_window)
-            .stream_receive_window(VarInt::from_u32(cfg.receive_window))
+            // Cap the total receive buffer of a connection. A single stream may use at
+            // most 4/5 of the connection window, leaving 1/5 headroom so that one busy
+            // stream cannot starve the others.
+            .stream_receive_window(VarInt::from_u32(
+                cfg.receive_window - cfg.receive_window / 5,
+            ))
+            .receive_window(VarInt::from_u32(cfg.receive_window))
             .max_idle_timeout(None)
             //.max_idle_timeout(Some(IdleTimeout::from(VarInt::from_u32(10))))
             .initial_mtu(cfg.initial_mtu)

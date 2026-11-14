@@ -97,7 +97,9 @@ disable_native_certs = false
 # QUIC send window size (bytes)
 send_window = 16777216
 
-# QUIC receive window size (bytes)
+# QUIC connection-wide receive window size (bytes).
+# A single stream may use at most 4/5 of this window, leaving 1/5 headroom
+# for other streams; the total across all streams is capped by this value.
 receive_window = 8388608
 
 # Initial MTU

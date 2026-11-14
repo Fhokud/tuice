@@ -257,7 +257,8 @@ gso = true
 pmtu = true
 # Max bytes to transmit to peer without acknowledgment
 send_window = 16777216
-# Max bytes peer may transmit without acknowledgment per stream
+# Max bytes peer may transmit without acknowledgment across all streams.
+# A single stream may use at most 4/5 of this window; the total is capped here.
 receive_window = 8388608
 # How long to wait before closing idle connection
 max_idle_time = "30s"
