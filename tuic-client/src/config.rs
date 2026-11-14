@@ -231,6 +231,10 @@ pub struct ProxyConfig {
 #[educe(Default)]
 #[serde(deny_unknown_fields, default)]
 pub struct Local {
+	/// Reply to SOCKS5 CONNECT before establishing the relay stream.
+	#[educe(Default = true)]
+	pub optimistic_open: bool,
+
 	#[educe(Default = None)]
 	pub server: Option<SocketAddr>,
 
@@ -630,8 +634,22 @@ mod tests {
 		assert_eq!(config.relay.gc_interval, Duration::from_secs(3));
 		assert_eq!(config.relay.gc_lifetime, Duration::from_secs(15));
 		assert!(!config.relay.skip_cert_verify);
+		assert!(config.local.optimistic_open);
 		assert_eq!(config.local.max_packet_size, 1500);
 		assert_eq!(config.local.server, Some("127.0.0.1:1080".parse().unwrap()));
+	}
+
+	#[test]
+	fn test_optimistic_open_config() {
+		assert!(Local::default().optimistic_open);
+		for value in [true, false] {
+			let json = format!(r#"{{"relay": {{"server": "example.com:443"}}, "local": {{"optimistic_open": {value}}}}}"#);
+			assert_eq!(test_parse_config(&json, ".json5").unwrap().local.optimistic_open, value);
+			let toml = format!("[relay]\nserver = \"example.com:443\"\n[local]\noptimistic_open = {value}\n");
+			assert_eq!(test_parse_config(&toml, ".toml").unwrap().local.optimistic_open, value);
+			let yaml = format!("relay:\n  server: example.com:443\nlocal:\n  optimistic_open: {value}\n");
+			assert_eq!(test_parse_config(&yaml, ".yaml").unwrap().local.optimistic_open, value);
+		}
 	}
 
 	#[test]

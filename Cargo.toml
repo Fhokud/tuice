@@ -5,8 +5,8 @@ resolver = "2"
 
 [workspace.package]
 authors = ["EAimTY <ea.imty@gmail.com>", "Itsusinn <sun@ihsin.dev>"]
-version = "1.8.12"
-rust-version = "1.85.0"
+version = "26.9.8"
+rust-version = "1.95.0"
 edition = "2024"
 readme = "README.md"
 license = "GPL-3.0-or-later"

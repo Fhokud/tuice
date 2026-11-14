@@ -4,6 +4,7 @@ use std::sync::Arc;
 use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
 use crate::Instant;
 use crate::connection::RttEstimator;
+use crate::packet::SpaceId;
 
 /// A simple, standard congestion controller
 #[derive(Debug, Clone)]
@@ -47,6 +48,7 @@ impl Controller for NewReno {
         sent: Instant,
         bytes: u64,
         _pn: u64,
+        _space: SpaceId,
         app_limited: bool,
         _rtt: &RttEstimator,
     ) {
@@ -91,6 +93,7 @@ impl Controller for NewReno {
         _is_ecn: bool,
         _lost_bytes: u64,
         _largest_lost: u64,
+        _space: SpaceId,
     ) {
         if sent <= self.recovery_start_time {
             return;
@@ -120,6 +123,7 @@ impl Controller for NewReno {
             congestion_window: self.window(),
             ssthresh: Some(self.ssthresh),
             pacing_rate: None,
+            bandwidth_estimate: None,
             send_quantum: None,
         }
     }

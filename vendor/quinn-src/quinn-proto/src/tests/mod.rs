@@ -1,8 +1,12 @@
 use std::{
+    any::Any,
     convert::TryInto,
     mem,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use assert_matches::assert_matches;
@@ -10,7 +14,7 @@ use assert_matches::assert_matches;
 use aws_lc_rs::hmac;
 use bytes::{Bytes, BytesMut};
 use hex_literal::hex;
-use rand::RngCore;
+use rand::Rng;
 #[cfg(feature = "ring")]
 use ring::hmac;
 #[cfg(all(feature = "rustls-aws-lc-rs", not(feature = "rustls-ring")))]
@@ -28,6 +32,7 @@ use super::*;
 use crate::{
     Duration, Instant,
     cid_generator::{ConnectionIdGenerator, RandomConnectionIdGenerator},
+    congestion::{Controller, ControllerFactory, ControllerMetrics},
     crypto::rustls::QuicServerConfig,
     frame::FrameStruct,
     transport_parameters::TransportParameters,
@@ -143,6 +148,75 @@ fn lifecycle() {
     assert_eq!(pair.client.known_cids(), 0);
     assert_eq!(pair.server.known_connections(), 0);
     assert_eq!(pair.server.known_cids(), 0);
+}
+
+#[test]
+fn stats_include_congestion_controller_bandwidth_estimate() {
+    const WINDOW: u64 = 12_000;
+    const BANDWIDTH_ESTIMATE: u64 = 4_000_000;
+
+    #[derive(Clone)]
+    struct TestController;
+
+    impl Controller for TestController {
+        fn on_congestion_event(
+            &mut self,
+            _now: Instant,
+            _sent: Instant,
+            _is_persistent_congestion: bool,
+            _is_ecn: bool,
+            _lost_bytes: u64,
+            _largest_lost: u64,
+            _space: SpaceId,
+        ) {
+        }
+
+        fn on_mtu_update(&mut self, _new_mtu: u16) {}
+
+        fn window(&self) -> u64 {
+            WINDOW
+        }
+
+        fn metrics(&self) -> ControllerMetrics {
+            ControllerMetrics {
+                congestion_window: WINDOW,
+                bandwidth_estimate: Some(BANDWIDTH_ESTIMATE),
+                ..Default::default()
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn Controller> {
+            Box::new(self.clone())
+        }
+
+        fn initial_window(&self) -> u64 {
+            WINDOW
+        }
+
+        fn into_any(self: Box<Self>) -> Box<dyn Any> {
+            self
+        }
+    }
+
+    struct TestControllerFactory;
+
+    impl ControllerFactory for TestControllerFactory {
+        fn build(self: Arc<Self>, _now: Instant, _current_mtu: u16) -> Box<dyn Controller> {
+            Box::new(TestController)
+        }
+    }
+
+    let mut transport = TransportConfig::default();
+    transport.congestion_controller_factory(Arc::new(TestControllerFactory));
+    let mut config = client_config();
+    config.transport_config(Arc::new(transport));
+
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect_with(config);
+    let stats = pair.client_conn_mut(client_ch).stats();
+
+    assert_eq!(stats.path.cwnd, WINDOW);
+    assert_eq!(stats.path.bandwidth_estimate, Some(BANDWIDTH_ESTIMATE));
 }
 
 #[test]
@@ -519,6 +593,39 @@ fn congestion() {
 }
 
 #[test]
+fn full_initial_window() {
+    let _guard = subscribe();
+
+    // Keep `current_mtu` pinned to `INITIAL_MTU`, which the default initial window of 12000 bytes
+    // is an exact multiple of, so that the window can be filled precisely.
+    let mut transport = TransportConfig::default();
+    transport.mtu_discovery_config(None);
+    let mut config = client_config();
+    config.transport = Arc::new(transport);
+
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect_with(config);
+    assert_eq!(pair.client_conn_mut(client_ch).bytes_in_flight(), 0);
+    let window = pair.client_conn_mut(client_ch).congestion_window();
+    let mtu = u64::from(INITIAL_MTU);
+    assert_eq!(window % mtu, 0, "window must be exactly fillable");
+
+    let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
+    let data = vec![42; 2 * window as usize];
+    assert_eq!(
+        pair.client_send(client_ch, s).write(&data),
+        Ok(data.len()),
+        "the test must be limited by congestion control, not by flow control"
+    );
+
+    let span = tracing::info_span!("client");
+    let _guard = span.enter();
+    pair.client.drive(pair.time, pair.server.addr);
+    assert_eq!(pair.client_conn_mut(client_ch).bytes_in_flight(), window);
+    assert_eq!(pair.client.outbound.len() as u64, window / mtu);
+}
+
+#[test]
 fn high_latency_handshake() {
     let _guard = subscribe();
     let mut pair = Pair::default();
@@ -839,9 +946,21 @@ fn alpn_success() {
         .crypto_session()
         .handshake_data()
         .unwrap()
-        .downcast::<crate::crypto::rustls::HandshakeData>()
+        .downcast::<crypto::rustls::HandshakeData>()
         .unwrap();
     assert_eq!(hd.protocol.unwrap(), &b"bar"[..]);
+    assert_eq!(
+        hd.protocol_version
+            .unwrap()
+            .downcast_ref::<rustls::ProtocolVersion>(),
+        Some(&rustls::ProtocolVersion::TLSv1_3)
+    );
+    assert!(
+        hd.cipher_suite
+            .unwrap()
+            .downcast_ref::<rustls::CipherSuite>()
+            .is_some()
+    );
 }
 
 #[test]
@@ -1984,9 +2103,12 @@ fn datagram_send_recv() {
 #[test]
 fn datagram_recv_buffer_overflow() {
     let _guard = subscribe();
-    const WINDOW: usize = 100;
+    const PAYLOAD_WINDOW: usize = 100;
+    const METADATA_WINDOW: usize = 2 * size_of::<Datagram>();
+    const WINDOW: usize = PAYLOAD_WINDOW + METADATA_WINDOW;
     let server = ServerConfig {
         transport: Arc::new(TransportConfig {
+            // Account for exactly two datagrams of metadata space
             datagram_receive_buffer_size: Some(WINDOW),
             ..TransportConfig::default()
         }),
@@ -2000,9 +2122,9 @@ fn datagram_recv_buffer_overflow() {
         Some(WINDOW - Datagram::SIZE_BOUND)
     );
 
-    const DATA1: &[u8] = &[0xAB; (WINDOW / 3) + 1];
-    const DATA2: &[u8] = &[0xBC; (WINDOW / 3) + 1];
-    const DATA3: &[u8] = &[0xCD; (WINDOW / 3) + 1];
+    const DATA1: &[u8] = &[0xAB; (PAYLOAD_WINDOW / 3) + 1];
+    const DATA2: &[u8] = &[0xBC; (PAYLOAD_WINDOW / 3) + 1];
+    const DATA3: &[u8] = &[0xCD; (PAYLOAD_WINDOW / 3) + 1];
     pair.client_datagrams(client_ch)
         .send(DATA1.into(), true)
         .unwrap();
@@ -2027,6 +2149,28 @@ fn datagram_recv_buffer_overflow() {
     pair.drive();
     assert_eq!(pair.server_datagrams(server_ch).recv().unwrap(), DATA1);
     assert_matches!(pair.server_datagrams(server_ch).recv(), None);
+}
+
+#[test]
+fn datagram_larger_than_send_buffer_is_too_large() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let mut client_config = client_config();
+    let mut transport_config = TransportConfig::default();
+    transport_config.datagram_send_buffer_size(1);
+    client_config.transport_config(transport_config.into());
+    let (client_ch, _) = pair.connect_with(client_config);
+
+    assert_matches!(
+        pair.client_datagrams(client_ch)
+            .send(Bytes::from_static(&[0; 2]), true),
+        Err(SendDatagramError::TooLarge)
+    );
+    assert_matches!(
+        pair.client_datagrams(client_ch)
+            .send(Bytes::from_static(&[0; 2]), false),
+        Err(SendDatagramError::TooLarge)
+    );
 }
 
 #[test]
@@ -3157,6 +3301,30 @@ fn pure_sender_voluntarily_acks() {
     assert!(receiver_acks_final > receiver_acks_initial);
 }
 
+/// Initials rejected under saturation (here via `max_incoming(0)`) are dropped without
+/// sending a response: the client times out rather than receiving a CONNECTION_REFUSED.
+#[test]
+fn silently_drop_rejected_initials() {
+    let _guard = subscribe();
+    let mut server_config = server_config();
+    server_config.max_incoming(0);
+    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
+
+    let client_ch = pair.begin_connect(client_config());
+    pair.drive();
+    pair.server.assert_no_accept();
+    // `drive()` stops once the client's only remaining timer is its idle timeout; advance
+    // past it so the unanswered attempt gives up.
+    pair.time += Duration::from_secs(60);
+    pair.drive();
+    assert_matches!(
+        pair.client_conn_mut(client_ch).poll(),
+        Some(Event::ConnectionLost {
+            reason: ConnectionError::TimedOut,
+        })
+    );
+}
+
 #[test]
 fn reject_manually() {
     let _guard = subscribe();
@@ -3504,7 +3672,7 @@ fn oversized_datagrams_trigger_unblock() {
 
     assert_eq!(
         pair.client_datagrams(client_ch).send_buffer_space(),
-        send_buffer_size,
+        send_buffer_size - size_of::<Datagram>(),
         "expected the send buffer to be empty after too large datagrams were dropped",
     );
     match pair.client_conn_mut(client_ch).poll() {
@@ -3628,4 +3796,204 @@ fn handshake_confirmation_no_resumption_shortcut() {
         Some(Event::HandshakeConfirmed)
     );
     assert_matches!(pair.client_conn_mut(ch).poll(), None);
+}
+
+/// A controller whose window is effectively unbounded but which always reports a low pacing
+/// rate, so the only thing that can ever block a send is the pacer. Counts how many times the
+/// connection reports the spec's `C.is_cwnd_limited` signal.
+#[derive(Debug)]
+struct PacingOnlyController {
+    cwnd_limited_reports: Arc<AtomicU64>,
+}
+
+impl Controller for PacingOnlyController {
+    fn on_cwnd_limited(&mut self) {
+        self.cwnd_limited_reports.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn on_congestion_event(
+        &mut self,
+        _now: Instant,
+        _sent: Instant,
+        _is_persistent_congestion: bool,
+        _is_ecn: bool,
+        _lost_bytes: u64,
+        _largest_lost: u64,
+        _space: SpaceId,
+    ) {
+    }
+
+    fn on_mtu_update(&mut self, _new_mtu: u16) {}
+
+    fn window(&self) -> u64 {
+        u64::MAX / 2
+    }
+
+    fn metrics(&self) -> ControllerMetrics {
+        ControllerMetrics {
+            congestion_window: self.window(),
+            ssthresh: None,
+            // 1 Mbit/s in bytes/sec: low enough that a bulk transfer is pacing-blocked almost
+            // continuously.
+            pacing_rate: Some(125_000),
+            bandwidth_estimate: None,
+            send_quantum: Some(2 * 1200),
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Controller> {
+        Box::new(Self {
+            cwnd_limited_reports: self.cwnd_limited_reports.clone(),
+        })
+    }
+
+    fn initial_window(&self) -> u64 {
+        u64::MAX / 2
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+struct PacingOnlyConfig {
+    cwnd_limited_reports: Arc<AtomicU64>,
+}
+
+impl ControllerFactory for PacingOnlyConfig {
+    fn build(self: Arc<Self>, _now: Instant, _current_mtu: u16) -> Box<dyn Controller> {
+        Box::new(PacingOnlyController {
+            cwnd_limited_reports: self.cwnd_limited_reports.clone(),
+        })
+    }
+}
+
+/// `C.is_cwnd_limited` means the sender filled the congestion window. A flow held back by
+/// pacing is not cwnd-limited and a paced controller such as BBR3 is pacing-limited by
+/// design, so conflating the two pins the signal true and breaks the decisions built on it.
+#[test]
+fn cwnd_limited_is_not_reported_when_only_pacing_blocks() {
+    let _guard = subscribe();
+    let reports = Arc::new(AtomicU64::new(0));
+
+    let mut transport = TransportConfig::default();
+    transport.congestion_controller_factory(Arc::new(PacingOnlyConfig {
+        cwnd_limited_reports: reports.clone(),
+    }));
+    let mut client_cfg = client_config();
+    client_cfg.transport = Arc::new(transport);
+
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect_with(client_cfg);
+
+    let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
+    pair.client_send(client_ch, s)
+        .write(&[42; 64 * 1024])
+        .unwrap();
+    pair.drive();
+
+    assert_eq!(
+        reports.load(Ordering::Relaxed),
+        0,
+        "connection reported cwnd-limited while only pacing was holding sends back"
+    );
+}
+
+/// A controller that never limits the window or the rate, but reports a small send quantum, so
+/// the quantum is the only thing that can bound an aggregate handed to the NIC.
+#[derive(Debug, Clone)]
+struct FixedQuantumController {
+    send_quantum: u64,
+}
+
+impl Controller for FixedQuantumController {
+    fn on_congestion_event(
+        &mut self,
+        _now: Instant,
+        _sent: Instant,
+        _is_persistent_congestion: bool,
+        _is_ecn: bool,
+        _lost_bytes: u64,
+        _largest_lost: u64,
+        _space: SpaceId,
+    ) {
+    }
+
+    fn on_mtu_update(&mut self, _new_mtu: u16) {}
+
+    fn window(&self) -> u64 {
+        u64::MAX / 2
+    }
+
+    fn metrics(&self) -> ControllerMetrics {
+        ControllerMetrics {
+            congestion_window: self.window(),
+            ssthresh: None,
+            // 1 GB/s: high enough that the pacer never delays within a single batch.
+            pacing_rate: Some(1_000_000_000),
+            bandwidth_estimate: None,
+            send_quantum: Some(self.send_quantum),
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Controller> {
+        Box::new(self.clone())
+    }
+
+    fn initial_window(&self) -> u64 {
+        u64::MAX / 2
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any> {
+        self
+    }
+}
+
+impl ControllerFactory for FixedQuantumController {
+    fn build(self: Arc<Self>, _now: Instant, _current_mtu: u16) -> Box<dyn Controller> {
+        Box::new((*self).clone())
+    }
+}
+
+/// `C.send_quantum` bounds the size of one aggregate scheduled and transmitted together, which
+/// for a GSO batch means the number of datagrams written in a single call.
+#[test]
+fn send_quantum_bounds_the_gso_batch() {
+    /// Datagrams the reported quantum should permit per batch.
+    const QUANTUM_DATAGRAMS: usize = 3;
+    /// Datagrams the caller is willing to accept, well above the quantum.
+    const MAX_DATAGRAMS: usize = 10;
+
+    let _guard = subscribe();
+
+    let mut transport = TransportConfig::default();
+    transport.congestion_controller_factory(Arc::new(FixedQuantumController {
+        send_quantum: QUANTUM_DATAGRAMS as u64 * DEFAULT_MTU as u64,
+    }));
+    let mut client_cfg = client_config();
+    client_cfg.transport = Arc::new(transport);
+
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect_with(client_cfg);
+
+    let s = pair.client_streams(client_ch).open(Dir::Uni).unwrap();
+    pair.client_send(client_ch, s)
+        .write(&[42; 64 * 1024])
+        .unwrap();
+
+    let now = pair.time;
+    let mut buf = Vec::new();
+    let transmit = pair
+        .client_conn_mut(client_ch)
+        .poll_transmit(now, MAX_DATAGRAMS, &mut buf)
+        .expect("a stream write must produce a transmit");
+
+    let datagrams = match transmit.segment_size {
+        Some(segment_size) => buf.len().div_ceil(segment_size),
+        None => 1,
+    };
+    assert!(
+        datagrams <= QUANTUM_DATAGRAMS,
+        "batched {datagrams} datagrams, over the {QUANTUM_DATAGRAMS} the send quantum allows"
+    );
 }

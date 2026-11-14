@@ -2,17 +2,19 @@ use std::{
     cmp,
     collections::{BTreeMap, VecDeque},
     mem,
-    ops::{Bound, Index, IndexMut},
+    ops::{Bound, Index, IndexMut, Range},
 };
 
-use rand::Rng;
+use rand::{Rng, RngExt};
 use rustc_hash::FxHashSet;
 use tracing::trace;
 
 use super::assembler::Assembler;
+use super::sent_packets::SentPackets;
 use crate::{
-    Dir, Duration, Instant, SocketAddr, StreamId, TransportError, VarInt, connection::StreamsState,
-    crypto::Keys, frame, packet::SpaceId, range_set::ArrayRangeSet, shared::IssuedCid,
+    Dir, Duration, Instant, SocketAddr, StreamId, TransportError, VarInt, cid_queue::CidQueue,
+    connection::StreamsState, crypto::Keys, frame, packet::SpaceId, range_set::ArrayRangeSet,
+    shared::IssuedCid,
 };
 
 pub(super) struct PacketSpace {
@@ -37,8 +39,7 @@ pub(super) struct PacketSpace {
     /// Number of packets in `sent_packets` with numbers above `largest_ack_eliciting_sent`
     pub(super) unacked_non_ack_eliciting_tail: u64,
     /// Transmitted but not acked
-    // We use a BTreeMap here so we can efficiently query by range on ACK and for loss detection
-    pub(super) sent_packets: BTreeMap<u64, SentPacket>,
+    pub(super) sent_packets: SentPackets,
     /// Packets that were deemed lost
     // Older packets are regularly removed in `Connection::drain_lost_packets`.
     pub(super) lost_packets: BTreeMap<u64, LostPacket>,
@@ -86,7 +87,7 @@ impl PacketSpace {
             largest_acked_packet_sent: now,
             largest_ack_eliciting_sent: 0,
             unacked_non_ack_eliciting_tail: 0,
-            sent_packets: BTreeMap::new(),
+            sent_packets: SentPackets::default(),
             lost_packets: BTreeMap::new(),
             ecn_counters: frame::EcnCounts::ZERO,
             ecn_feedback: frame::EcnCounts::ZERO,
@@ -209,7 +210,7 @@ impl PacketSpace {
 
     /// Stop tracking sent packet `number`, and return what we knew about it
     pub(super) fn take(&mut self, number: u64) -> Option<SentPacket> {
-        let packet = self.sent_packets.remove(&number)?;
+        let packet = self.sent_packets.remove(number)?;
         if !packet.ack_eliciting && number > self.largest_ack_eliciting_sent {
             self.unacked_non_ack_eliciting_tail =
                 self.unacked_non_ack_eliciting_tail.checked_sub(1).unwrap();
@@ -232,7 +233,7 @@ impl PacketSpace {
             self.unacked_non_ack_eliciting_tail = 0;
             self.largest_ack_eliciting_sent = number;
         } else if self.unacked_non_ack_eliciting_tail > MAX_UNACKED_NON_ACK_ELICTING_TAIL {
-            let oldest_after_ack_eliciting = *self
+            let oldest_after_ack_eliciting = self
                 .sent_packets
                 .range((
                     Bound::Excluded(self.largest_ack_eliciting_sent),
@@ -247,7 +248,7 @@ impl PacketSpace {
             // in-flight counters if padded.
             let packet = self
                 .sent_packets
-                .remove(&oldest_after_ack_eliciting)
+                .remove(oldest_after_ack_eliciting)
                 .unwrap();
             debug_assert!(!packet.ack_eliciting);
             forgotten = Some(packet);
@@ -261,10 +262,7 @@ impl PacketSpace {
 
     /// Whether any congestion-controlled packets in this space are not yet acknowledged or lost
     pub(super) fn has_in_flight(&self) -> bool {
-        // The number of non-congestion-controlled (i.e. size == 0) packets in flight at a time
-        // should be small, since otherwise congestion control wouldn't be effective. Therefore,
-        // this shouldn't need to visit many packets before finishing one way or another.
-        self.sent_packets.values().any(|x| x.size != 0)
+        self.sent_packets.has_in_flight()
     }
 }
 
@@ -348,6 +346,19 @@ pub struct Retransmits {
 }
 
 impl Retransmits {
+    pub(super) fn retire_cids(&mut self, cids: Range<u64>) -> Result<(), TransportError> {
+        // We don't bother counting in-flight frames because those are bounded by congestion control.
+        let num = cids.end.saturating_sub(cids.start);
+        if (self.retire_cids.len() as u64).saturating_add(num) > Self::MAX_PENDING_RETIRED_CIDS {
+            return Err(TransportError::CONNECTION_ID_LIMIT_ERROR(
+                "queued too many retired CIDs",
+            ));
+        }
+
+        self.retire_cids.extend(cids);
+        Ok(())
+    }
+
     pub(super) fn is_empty(&self, streams: &StreamsState) -> bool {
         !self.max_data
             && !self.max_stream_id.into_iter().any(|x| x)
@@ -365,6 +376,11 @@ impl Retransmits {
             && !self.handshake_done
             && self.new_tokens.is_empty()
     }
+
+    /// Ensure `pending_retired` cannot grow without bound
+    ///
+    /// Limit is somewhat arbitrary but very permissive.
+    const MAX_PENDING_RETIRED_CIDS: u64 = CidQueue::LEN as u64 * 10;
 }
 
 impl ::std::ops::BitOrAssign for Retransmits {
@@ -459,15 +475,6 @@ pub(super) struct Dedup {
     next: u64,
 }
 
-/// Inner bitfield type.
-///
-/// Because QUIC never reuses packet numbers, this only needs to be large enough to deal with
-/// packets that are reordered but still delivered in a timely manner.
-type Window = u128;
-
-/// Number of packets tracked by `Dedup`.
-const WINDOW_SIZE: u64 = 1 + mem::size_of::<Window>() as u64 * 8;
-
 impl Dedup {
     /// Construct an empty window positioned at the start.
     pub(super) fn new() -> Self {
@@ -514,7 +521,7 @@ impl Dedup {
     fn smallest_missing_in_interval(&self, lower_bound: u64, upper_bound: u64) -> Option<u64> {
         debug_assert!(lower_bound <= upper_bound);
         debug_assert!(upper_bound <= self.highest());
-        const BITFIELD_SIZE: u64 = (mem::size_of::<Window>() * 8) as u64;
+        const BITFIELD_SIZE: u64 = Window::BITS as u64;
 
         // Since we already know the packets at the boundaries have been received, we only need to
         // check those in between them (this removes the necessity of extra logic to deal with the
@@ -569,6 +576,15 @@ impl Dedup {
             .is_some()
     }
 }
+
+/// Inner bitfield type
+///
+/// Because QUIC never reuses packet numbers, this only needs to be large enough to deal with
+/// packets that are reordered but still delivered in a timely manner.
+type Window = u128;
+
+/// Number of packets tracked by `Dedup`
+const WINDOW_SIZE: u64 = 1 + size_of::<Window>() as u64 * 8;
 
 /// Indicates which data is available for sending
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1097,6 +1113,6 @@ mod test {
     fn sent_packet_size() {
         // The tracking state of sent packets should be minimal, and not grow
         // over time.
-        assert!(std::mem::size_of::<SentPacket>() <= 128);
+        assert!(size_of::<SentPacket>() <= 128);
     }
 }

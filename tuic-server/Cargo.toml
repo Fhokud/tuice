@@ -38,7 +38,7 @@ tuic-core = { path = "../tuic-core", default-features = false, features = ["asyn
 # Tokio/Async
 tokio = { version = "1", default-features = false, features = ["io-util", "macros", "net", "parking_lot", "rt-multi-thread", "time", "fs", "signal"] }
 tokio-util = "0.7"
-axum-server = "0.8"
+axum-server = "0.9"
 
 # TLS
 rustls = { version = "0.23", default-features = false }
@@ -56,7 +56,7 @@ json5 = { version = "1", default-features = false }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 figment = { version = "0.10", features = ["toml", "yaml"] }
 figment-json5 = "0.1"
-educe = { version = "0.6", default-features = false, features = ["Default"] }
+educe = { version = "0.8", default-features = false, features = ["Default"] }
 derive_more = { version = "2", default-features = false, features = ["display"] }
 humantime-serde = "1"
 ip_network = "0.4"

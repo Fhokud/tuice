@@ -6,7 +6,7 @@ use std::{
 
 use bytes::Bytes;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
-use socks5_proto::Address;
+use socks5_proto::{Address, UdpHeader};
 use socks5_server::AssociatedUdpSocket;
 use tokio::net::UdpSocket;
 use tracing::{debug, info, warn};
@@ -87,7 +87,7 @@ impl UdpSession {
 		info!("[socks5] [{ctrl_addr}] [associate] [{assoc_id:#06x}] tokio socket local address is {local_addr}");
 
 		Ok(Self {
-			socket: Arc::new(AssociatedUdpSocket::from((socket, max_pkt_size))),
+			socket: Arc::new(AssociatedUdpSocket::new(socket, max_pkt_size)),
 			assoc_id,
 			ctrl_addr,
 		})
@@ -106,16 +106,16 @@ impl UdpSession {
 			"[socks5] [{ctrl_addr}] [associate] [{assoc_id:#06x}] send packet from {src_addr_display} to {dst_addr}",
 			ctrl_addr = self.ctrl_addr,
 			assoc_id = self.assoc_id,
-			dst_addr = self.socket.peer_addr().unwrap(),
+			dst_addr = self.socket.get_ref().peer_addr().unwrap(),
 		);
 
-		if let Err(err) = self.socket.send(pkt, 0, src_addr).await {
+		if let Err(err) = self.socket.send(pkt, &UdpHeader::new(0, src_addr)).await {
 			warn!(
 				"[socks5] [{ctrl_addr}] [associate] [{assoc_id:#06x}] send packet from {src_addr_display} to {dst_addr} \
 				 error: {err}",
 				ctrl_addr = self.ctrl_addr,
 				assoc_id = self.assoc_id,
-				dst_addr = self.socket.peer_addr().unwrap(),
+				dst_addr = self.socket.get_ref().peer_addr().unwrap(),
 			);
 
 			return Err(Error::Io(err));
@@ -125,7 +125,15 @@ impl UdpSession {
 	}
 
 	pub async fn recv(&self) -> Result<(Bytes, Address), Error> {
-		let (pkt, frag, mut dst_addr, src_addr) = self.socket.recv_from().await?;
+		let (pkt, header, src_addr) = self
+			.socket
+			.recv_from()
+			.await
+			.map_err(|(err, _)| Error::Socks5(err.to_string()))?;
+		let UdpHeader {
+			frag,
+			address: mut dst_addr,
+		} = header;
 
 		if let Address::SocketAddress(SocketAddr::V6(v6)) = dst_addr {
 			if let Some(v4) = v6.ip().to_ipv4_mapped() {
@@ -133,7 +141,7 @@ impl UdpSession {
 			}
 		}
 
-		if let Ok(connected_addr) = self.socket.peer_addr() {
+		if let Ok(connected_addr) = self.socket.get_ref().peer_addr() {
 			let connected_addr = match connected_addr {
 				SocketAddr::V4(addr) => {
 					if let SocketAddr::V6(_) = src_addr {
@@ -158,7 +166,7 @@ impl UdpSession {
 				Err(IoError::other(format!("invalid source address: {src_addr}")))?;
 			}
 		} else {
-			self.socket.connect(src_addr).await?;
+			self.socket.get_ref().connect(src_addr).await?;
 		}
 
 		if frag != 0 {
@@ -175,6 +183,31 @@ impl UdpSession {
 	}
 
 	pub fn local_addr(&self) -> Result<SocketAddr, IoError> {
-		self.socket.local_addr()
+		self.socket.get_ref().local_addr()
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test]
+	async fn udp_header_and_payload_round_trip() {
+		let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+		let session = UdpSession::new(1, client.local_addr().unwrap(), "127.0.0.1".parse().unwrap(), None, 1500).unwrap();
+		let client = AssociatedUdpSocket::new(client, 1500);
+		let target = Address::DomainAddress(b"example.com".to_vec(), 53);
+		client
+			.send_to(b"query", &UdpHeader::new(0, target.clone()), session.local_addr().unwrap())
+			.await
+			.unwrap();
+		let (payload, address) = session.recv().await.unwrap();
+		assert_eq!(payload.as_ref(), b"query");
+		assert_eq!(address, target);
+		session.send(Bytes::from_static(b"answer"), target.clone()).await.unwrap();
+		let (payload, header, _) = client.recv_from().await.unwrap();
+		assert_eq!(payload.as_ref(), b"answer");
+		assert_eq!(header.frag, 0);
+		assert_eq!(header.address, target);
 	}
 }

@@ -127,6 +127,9 @@ skip_cert_verify = false
 # Local SOCKS5 server address
 server = "127.0.0.1:1080"
 
+# Optimistically acknowledge SOCKS5 CONNECT before relay setup (default: true)
+optimistic_open = true
+
 # Optional: SOCKS5 authentication username
 # username = "socks_user"
 
@@ -154,3 +157,21 @@ max_packet_size = 1500
 ## License
 
 GNU General Public License v3.0
+
+### Optimistic Open (optimistic acknowledgement)
+
+`local.optimistic_open` defaults to `true`. After SOCKS5 authentication and a valid
+CONNECT request, the client immediately replies with success, allowing the
+application to send its first data while the QUIC relay connection and stream
+are being established. Data waits in the bounded TCP receive buffer until the
+relay is ready. If setup fails after success was sent, the connection closes
+without a second SOCKS5 reply. Existing `relay.startup_mode` failure/retry
+behavior still applies.
+
+Set `optimistic_open = false` in `[local]` to restore the previous behavior: wait for
+the relay stream and CONNECT command to be ready before replying, and send a
+SOCKS5 failure if that setup fails. TUIC has no destination-connect acknowledgement,
+so neither setting confirms that the remote destination is reachable. Unlike
+Hysteria's Fast Open, this change does not save an additional destination-confirmation
+RTT on an already established TUIC connection. It is independent of
+`relay.zero_rtt_handshake`; UDP and raw TCP forwarding are unaffected.

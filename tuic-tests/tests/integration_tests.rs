@@ -303,6 +303,7 @@ async fn test_server_client_integration() -> eyre::Result<()> {
 			..Default::default()
 		},
 		local: tuic_client::config::Local {
+			optimistic_open: true,
 			server: "127.0.0.1:1080".parse().map(Some)?,
 			username: None,
 			password: None,
@@ -622,6 +623,7 @@ async fn test_tcp_udp_forward_integration() -> eyre::Result<()> {
 			..Default::default()
 		},
 		local: tuic_client::config::Local {
+			optimistic_open: true,
 			// The SOCKS5 listener is required by the client runtime even though
 			// this test doesn't exercise it; pick a port distinct from the other
 			// integration tests.
@@ -873,6 +875,7 @@ async fn test_ipv6_server_client_integration() -> eyre::Result<()> {
 			max_concurrent_streams: 1280,
 		},
 		local: tuic_client::config::Local {
+			optimistic_open: true,
 			server: "[::1]:1081".parse().map(Some)?,
 			username: None,
 			password: None,
@@ -1076,6 +1079,7 @@ async fn test_client_proxy_configuration() -> eyre::Result<()> {
 			..Default::default()
 		},
 		local: tuic_client::config::Local {
+			optimistic_open: true,
 			server: "127.0.0.1:1082".parse().map(Some)?,
 			..Default::default()
 		},
