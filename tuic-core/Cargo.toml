@@ -23,7 +23,7 @@ aws-lc-rs = ["rustls/aws-lc-rs", "tokio-rustls/aws-lc-rs", "quinn/rustls-aws-lc-
 bytes = { version = "1", default-features = false, features = ["std"] }
 peekable = { version = "0.6", default-features = false, features = ["tokio", "smallvec"] }
 futures-util = { version = "0.3", default-features = false, features = ["io", "std"], optional = true }
-parking_lot = { version = "0.12", default-features = false, optional = true }
+parking_lot = { version = "0.13", default-features = false, optional = true }
 register-count = { version = "0.1", default-features = false, features = ["std"], optional = true }
 thiserror = { version = "2", default-features = false }
 uuid = { version = "1", default-features = false, features = ["std"] }
